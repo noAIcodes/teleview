@@ -1,18 +1,13 @@
 <script setup>
 import { ref } from 'vue';
-import HelloWorld from './components/HelloWorld.vue'
-import DialogList from './components/DialogList.vue'
-import AuthForm from './components/AuthForm.vue';
+import DialogList from './components/DialogList.vue';
 import ChannelMessages from './components/ChannelMessages.vue';
+// AuthForm import is removed
 
-const isAuthenticated = ref(false);
-const authenticatedPhoneNumber = ref(null);
+// isAuthenticated and authenticatedPhoneNumber are removed
 const selectedChannelId = ref(null);
 
-const handleAuthenticated = (phoneNumber) => {
-  authenticatedPhoneNumber.value = phoneNumber;
-  isAuthenticated.value = true;
-};
+// handleAuthenticated is removed
 
 const selectChannel = (channelId) => {
   selectedChannelId.value = channelId;
@@ -24,31 +19,24 @@ const backToDialogs = () => {
 </script>
 
 <template>
+  <!-- 
+    The main div now directly controls visibility of DialogList or ChannelMessages
+    based on selectedChannelId, assuming authentication is handled by the backend.
+  -->
   <div>
-    <a href="https://vite.dev" target="_blank">
-      <img src="/vite.svg" class="logo" alt="Vite logo" />
-    </a>
-    <a href="https://vuejs.org/" target="_blank">
-      <img src="./assets/vue.svg" class="logo vue" alt="Vue logo" />
-    </a>
-  </div>
-  <HelloWorld msg="Vite + Vue" />
-
-  <div v-if="isAuthenticated">
     <div v-if="selectedChannelId === null">
-      <DialogList :phone-number="authenticatedPhoneNumber" @select-channel="selectChannel" />
+      <!-- DialogList no longer needs phone-number prop -->
+      <DialogList @select-channel="selectChannel" />
     </div>
     <div v-else>
+      <!-- ChannelMessages no longer needs phone-number prop -->
       <ChannelMessages
-        :phone-number="authenticatedPhoneNumber"
         :channel-id="selectedChannelId"
         @back-to-dialogs="backToDialogs"
       />
     </div>
   </div>
-  <div v-else>
-    <AuthForm @authenticated="handleAuthenticated" />
-  </div>
+  <!-- AuthForm usage is removed -->
 </template>
 
 <style scoped>

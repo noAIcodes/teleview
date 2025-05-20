@@ -71,10 +71,10 @@ button:focus-visible {
 
 @media (prefers-color-scheme: light) {
   @tailwind base;
-@tailwind components;
-@tailwind utilities;
+  @tailwind components;
+  @tailwind utilities;
 
-:root {
+  :root {
     color: #213547;
     background-color: #ffffff;
   }
@@ -84,4 +84,11 @@ button:focus-visible {
   button {
     background-color: #f9f9f9;
   }
+}
+
+/* You can add other global styles here */
+body {
+  font-family: "Inter", sans-serif; /* Example: Using a nice sans-serif font */
+  margin: 0;
+  background-color: #f4f7f6; /* A light background color */
 }

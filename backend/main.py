@@ -1,509 +1,509 @@
 import os
-import logging # Import the logging module
+import io
+import logging
 from fastapi import FastAPI, HTTPException, Depends, status, Request, Query
-import sqlite3
-import aiosqlite # For async database operations
-from fastapi.responses import JSONResponse
-from pyrogram import Client
-from pyrogram.errors import SessionPasswordNeeded, PhoneCodeInvalid, PhoneNumberInvalid, UserNotParticipant, PeerIdInvalid, AuthKeyUnregistered # Import additional Pyrogram errors
-from pyrogram.enums import ChatType
-from pyrogram.types import Message as PyrogramMessage # To avoid name clash
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, StreamingResponse
+from pyrogram.client import Client
+import pyrogram.enums # pyrogram.enums.MessageMediaType, pyrogram.enums.PollType
+from pyrogram.errors import (
+    UserNotParticipant, PeerIdInvalid, AuthKeyUnregistered, ChannelPrivate, ChannelInvalid,
+    InviteHashExpired, InviteHashInvalid, FloodWait
+)
+from pyrogram.types import Message as PyrogramMessage, ChatPrivileges, Chat, ChatPreview, Poll
 from dotenv import load_dotenv
 from pathlib import Path
-from typing import List, Optional, Any
-from pydantic import BaseModel, Field # For request/response models
+from typing import List, Optional, Any, AsyncGenerator, Union
+from pydantic import BaseModel, Field
+from contextlib import asynccontextmanager
+import datetime # For message date conversion
 
 # Configure basic logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
-logger = logging.getLogger(__name__) # Get a logger for this module
+logger = logging.getLogger(__name__)
 
 # Load environment variables from .env file
-load_dotenv()
+dotenv_path = Path(__file__).parent / ".env"
+load_dotenv(dotenv_path=dotenv_path)
 
-API_ID = os.getenv("TELEGRAM_API_ID")
+API_ID_STR = os.getenv("TELEGRAM_API_ID")
 API_HASH = os.getenv("TELEGRAM_API_HASH")
-# PHONE_NUMBER = os.getenv("PHONE_NUMBER") # Optional, for development convenience
+PHONE_NUMBER = os.getenv("PHONE_NUMBER")
 
-# Basic validation for API credentials
-if not API_ID or not API_HASH:
-    logger.error("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env file") # Log error
-    raise RuntimeError("TELEGRAM_API_ID and TELEGRAM_API_HASH must be set in .env file")
+if not API_ID_STR or not API_HASH or not PHONE_NUMBER:
+    error_msg = "TELEGRAM_API_ID, TELEGRAM_API_HASH, and PHONE_NUMBER must be set in .env file"
+    logger.error(error_msg)
+    raise RuntimeError(error_msg)
 
-# Database setup
-DATABASE_URL = "./telegram_sessions.db"
-
-async def get_db():
-    db = await aiosqlite.connect(DATABASE_URL)
-    db.row_factory = aiosqlite.Row
-    return db
+try:
+    API_ID = int(API_ID_STR)
+except ValueError:
+    error_msg = "TELEGRAM_API_ID must be an integer."
+    logger.error(error_msg)
+    raise RuntimeError(error_msg)
 
 async def init_db():
-    async with await aiosqlite.connect(DATABASE_URL) as db:
-        await db.execute("""
-        CREATE TABLE IF NOT EXISTS sessions (
-            phone_number TEXT PRIMARY KEY,
-            phone_code_hash TEXT NOT NULL,
-            session_name TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-        """)
-        await db.commit()
-        logger.info("Database initialized.")
-
-# temp_storage = {} # Replaced by SQLite
+    logger.info("Database initialization step (if any other tables exist). No session table needed.")
 
 app = FastAPI(title="Telegram Channel Viewer API")
+
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 @app.on_event("startup")
 async def startup_event():
     await init_db()
+    logger.info(f"Application started. Using phone number: {PHONE_NUMBER} for session.")
 
-# --- Pydantic Models for API Data Structures ---
-class RequestCodeBody(BaseModel):
-    phone_number: str = Field(..., example="+12345678900")
-
-class SubmitCodeBody(BaseModel):
-    phone_number: str = Field(..., example="+12345678900")
-    code: str = Field(..., example="12345")
-    password: Optional[str] = Field(None, example="your2FApassword")
-
+# --- Pydantic Models ---
 class DialogItem(BaseModel):
     id: int
     title: str
-    type: str # e.g., "channel", "group", "private"
+    type: str
+
+class PollOptionItem(BaseModel): # Renamed from PollOption to avoid clash if any
+    text: str
+    data: bytes # Raw data, pydantic will handle base64 if needed for json
+
+class PollDetails(BaseModel):
+    question: str
+    options: List[PollOptionItem]
+    total_voters: Optional[int] = None
+    is_closed: bool
+    is_anonymous: bool
+    type: str # "regular", "quiz"
+    allows_multiple_answers: bool
+    quiz_correct_option_id: Optional[int] = None
 
 class MessageItem(BaseModel):
     id: int
     text: Optional[str] = None
-    sender: Optional[str] = None # Or a more complex sender object
+    sender: Optional[str] = None
     date: int # Unix timestamp
-    media_type: Optional[str] = None
+    media_type: Optional[str] = None # "photo", "video", "document", "poll", etc.
     file_id: Optional[str] = None
     file_name: Optional[str] = None
     mime_type: Optional[str] = None
-    # Add more fields here as needed: photo, video, poll, etc.
+    poll_data: Optional[PollDetails] = None
 
 class SendMessageBody(BaseModel):
-    phone_number: str = Field(..., example="+12345678900")
-    chat_id: int = Field(..., description="ID of the chat (channel, group, or user) to send the message to")
+    chat_id: Union[int, str] = Field(..., description="ID or username of the chat to send the message to")
     text: str = Field(..., description="The message text to send")
 
-# --- Helper function to get an authenticated client ---
-async def get_authenticated_client(phone_number: str) -> Client:
-    logger.info(f"Attempting to get authenticated client for {phone_number}") # Log attempt
-    session_name = f"user_session_{phone_number.replace('+', '')}"
-    # Construct path relative to this file's directory
-    script_dir = Path(__file__).parent
-    session_file = script_dir / f"{session_name}.session" # Path object for session file
+class JoinChannelBody(BaseModel):
+    invite_link: str = Field(..., description="The invite link or username (e.g., https://t.me/channelname, t.me/joinchat/XXXX, @channelusername)")
 
-    if not session_file.exists(): # Check existence using the full path
-        logger.warning(f"Session file not found for {phone_number}: {session_file}") # Log warning
-        raise HTTPException(status_code=401, detail="User not authenticated or session expired. Please login first.")
-
-    # Pyrogram's `name` is the session file name (without .session)
-    # `workdir` is the directory where session files are stored.
-    client = Client(name=session_name, api_id=int(API_ID), api_hash=API_HASH, workdir=str(script_dir))
-    logger.info(f"Authenticated client created for {phone_number}") # Log success
-    return client
-
-# --- Authentication Endpoints ---
-@app.get("/")
-async def root():
-    logger.info("Root endpoint accessed") # Log access
-    return {"message": "Welcome to the Telegram Channel Viewer API"}
-
-# Import necessary slowapi components
-from slowapi import Limiter, _rate_limit_exts
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
-
-@app.post("/api/auth/request_code")
-@limiter.limit("5/minute") # Apply rate limit
-async def request_code(request: Request, auth_request: AuthRequest):
-    """
-    Initiates the Telegram login process by sending a code to the user's phone.
-    """
-    phone_number = body.phone_number # Assign phone_number from the request body
-    logger.info(f"Received request_code for {phone_number}") # Log request
-
-    # Using a unique session name for each phone number to allow multiple users
-    # or to easily clear sessions. For this app, we'll use the phone number
-    # itself, but sanitized to be a valid file name.
-    session_name = f"user_session_{phone_number.replace('+', '')}"
-    
-    # Create a new Pyrogram client instance for each login attempt or use an existing one
-    # For this initial step, we create it on demand.
-    # The `workdir` parameter tells Pyrogram where to store session files.
-    script_dir = Path(__file__).parent
-    client = Client(name=session_name, api_id=int(API_ID), api_hash=API_HASH, workdir=str(script_dir))
-
-    try:
-        await client.connect()
-        sent_code_info = await client.send_code(phone_number)
-        async with await get_db() as db:
-            await db.execute(
-                "INSERT OR REPLACE INTO sessions (phone_number, phone_code_hash, session_name) VALUES (?, ?, ?)",
-                (phone_number, sent_code_info.phone_code_hash, session_name)
-            )
-            await db.commit()
-        await client.disconnect()
-        logger.info(f"Code sent to {phone_number}, session data stored in DB.")
-        return JSONResponse(content={"message": "Verification code sent successfully.", "phone_code_hash_debug": sent_code_info.phone_code_hash})
-    except PhoneNumberInvalid:
-        if client.is_connected: # Ensure client is connected before trying to disconnect
-            await client.disconnect()
-        logger.warning(f"PhoneNumberInvalid for {phone_number}") # Log specific error
-        raise HTTPException(status_code=400, detail="Invalid phone number format.")
-    except Exception as e:
-        if client.is_connected: # Ensure client is connected before trying to disconnect
-            await client.disconnect()
-        logger.error(f"An error occurred in request_code for {phone_number}: {e}", exc_info=True) # Log unexpected error with traceback
-        raise HTTPException(status_code=500, detail=f"An error occurred: {str(e)}")
-
-@app.post("/api/auth/submit_code")
-async def submit_telegram_code(body: SubmitCodeBody):
-    """
-    Submits the verification code (and password if 2FA is enabled) to complete login.
-    """
-    phone_number = body.phone_number
-    code = body.code
-    password_from_request = body.password # Renamed for clarity
-    logger.info(f"Received submit_code for {phone_number}") # Log request
-
-    async with await get_db() as db:
-        cursor = await db.execute("SELECT phone_code_hash, session_name FROM sessions WHERE phone_number = ?", (phone_number,))
-        session_data = await cursor.fetchone()
-        await cursor.close()
-
-    if not session_data:
-        logger.warning(f"submit_code called without request_code for {phone_number} or session not found in DB")
-        raise HTTPException(status_code=400, detail="Please request a code first or session expired/not found.")
-
-    phone_code_hash = session_data["phone_code_hash"]
-    session_name = session_data["session_name"]
-
-    # Use the BASE_DIR for workdir
-    # NOTE: BASE_DIR is not defined in this file. It should be script_dir.
-    # Correcting this to use script_dir as defined earlier.
-    script_dir = Path(__file__).parent
-    client = Client(name=session_name, api_id=int(API_ID), api_hash=API_HASH, workdir=str(script_dir))
-    
-    try:
-        await client.connect()
-        logger.info(f"Attempting sign_in for {phone_number}") # Log attempt
-        # Always attempt sign_in without password first
-        await client.sign_in(
-            phone_number=phone_number,
-            phone_code_hash=phone_code_hash,
-            phone_code=code
-        )
-        
-        # If sign_in succeeds without SessionPasswordNeeded, 2FA was not required or already handled
-        async with await get_db() as db:
-            await db.execute("DELETE FROM sessions WHERE phone_number = ?", (phone_number,))
-            await db.commit()
-        me = await client.get_me()
-        await client.disconnect()
-        logger.info(f"Successfully signed in for {phone_number}, User ID: {me.id}. Session deleted from DB.")
-        return {"message": "Successfully signed in!", "user_id": me.id, "username": me.username}
-
-    except SessionPasswordNeeded:
-        logger.warning(f"SessionPasswordNeeded for {phone_number}") # Log 2FA requirement
-        if not password_from_request:
-            # Password was needed, but not provided in this API call
-            # No need to update DB here as the session is still pending password
-            await client.disconnect()
-            raise HTTPException(status_code=401, detail="Two-Factor Authentication password is required. Please provide your password.")
-        else:
-            # Password was provided in this API call, now try to check it
-            logger.info(f"Attempting check_password for {phone_number}") # Log attempt
-            try:
-                await client.check_password(password_from_request)
-                # If check_password succeeds
-                async with await get_db() as db:
-                    await db.execute("DELETE FROM sessions WHERE phone_number = ?", (phone_number,))
-                    await db.commit()
-                me = await client.get_me()
-                await client.disconnect()
-                logger.info(f"Successfully signed in with 2FA for {phone_number}, User ID: {me.id}. Session deleted from DB.")
-                return {"message": "Successfully signed in with 2FA!", "user_id": me.id, "username": me.username}
-            except Exception as e_pwd: # Catch errors from check_password (e.g., bad password)
-                await client.disconnect()
-                logger.error(f"Error during check_password for {phone_number}: {e_pwd}", exc_info=True) # Log 2FA error
-                raise HTTPException(status_code=401, detail=f"Incorrect 2FA password or other 2FA error.")
-
-    except PhoneCodeInvalid:
-        logger.error(f"Invalid phone code for {phone_number}")
-        async with await get_db() as db: # Clean up session if code is invalid
-            await db.execute("DELETE FROM sessions WHERE phone_number = ?", (phone_number,))
-            await db.commit()
-        await client.disconnect()
-        raise HTTPException(status_code=400, detail="Invalid phone code.")
-    except PhoneNumberInvalid: # Should ideally be caught by request_code, but good to have
-        await client.disconnect()
-        logger.warning(f"PhoneNumberInvalid during submit_code for {phone_number}") # Log specific error
-        raise HTTPException(status_code=400, detail="Invalid phone number format.")
-    except Exception as e:
-        logger.error(f"An unexpected error occurred during submit_code for {phone_number}: {e}")
-        # Attempt to clean up session on unexpected error, but don't fail if DB operation itself errors
-        try:
-            async with await get_db() as db:
-                await db.execute("DELETE FROM sessions WHERE phone_number = ?", (phone_number,))
-                await db.commit()
-        except Exception as db_err:
-            logger.error(f"Failed to clean up session from DB for {phone_number} after error: {db_err}")
-        if client.is_connected:
-            await client.disconnect()
-        raise HTTPException(status_code=500, detail=f"An unexpected error occurred: {str(e)}")
-
-# --- Data Fetching Endpoints ---
-@app.get("/api/dialogs", response_model=List[DialogItem])
-async def list_dialogs(phone_number: str = Query(..., description="Phone number of the authenticated user")):
-    """
-    Lists all dialogs (chats, channels, groups) for the authenticated user.
-    Requires a valid session file for the given phone number.
-    """
-    logger.info(f"Received request for dialogs for {phone_number}") # Log request
-    try:
-        client = await get_authenticated_client(phone_number)
-        dialog_items: List[DialogItem] = []
-        async with client: # Handles connect and disconnect
-            logger.info(f"Fetching dialogs for {phone_number}") # Log action
-            async for dialog in client.get_dialogs():
-                dialog_items.append(DialogItem(
-                    id=dialog.chat.id,
-                    title=dialog.chat.title if dialog.chat.title else (dialog.chat.first_name + (" " + dialog.chat.last_name if dialog.chat.last_name else "")),
-                    type=dialog.chat.type.name.lower() # e.g., "channel", "private", "group"
-                ))
-        logger.info(f"Successfully fetched {len(dialog_items)} dialogs for {phone_number}") # Log success
-        return dialog_items
-    except HTTPException: # Re-raise HTTPExceptions from get_authenticated_client
-        raise # HTTPException is already logged or handled by FastAPI
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered for {phone_number} during dialog fetch.")
-        raise HTTPException(status_code=401, detail="Authentication expired. Please login again.")
-    except Exception as e:
-        logger.error(f"Failed to list dialogs for {phone_number}: {e}", exc_info=True) # Log error
-        # Provide a generic 500 error to the client for unexpected issues
-        raise HTTPException(status_code=500, detail="An unexpected error occurred while fetching dialogs.")
-
-def format_message(msg: PyrogramMessage) -> MessageItem:
-    """Helper to convert Pyrogram Message to our MessageItem model."""
-    sender_name = None
-    if msg.from_user:
-        sender_name = msg.from_user.first_name
-        if msg.from_user.last_name:
-            sender_name += f" {msg.from_user.last_name}"
-        if msg.from_user.username:
-            sender_name += f" (@{msg.from_user.username})"
-    elif msg.sender_chat: # For messages sent by channels
-        sender_name = msg.sender_chat.title
-    
-    media_type_str = None
-    file_id_str = None
-    file_name_str = None
-    mime_type_str = None
-
-    if msg.media:
-        media_type_str = msg.media.value # e.g., "photo", "video", "document"
-        if msg.photo:
-            file_id_str = msg.photo.file_id
-        elif msg.video:
-            file_id_str = msg.video.file_id
-            file_name_str = msg.video.file_name
-            mime_type_str = msg.video.mime_type
-        elif msg.audio:
-            file_id_str = msg.audio.file_id
-            file_name_str = msg.audio.file_name
-            mime_type_str = msg.audio.mime_type
-        elif msg.voice:
-            file_id_str = msg.voice.file_id
-            mime_type_str = msg.voice.mime_type
-        elif msg.sticker:
-            file_id_str = msg.sticker.file_id
-            file_name_str = msg.sticker.file_name # Stickers can have emoji as name
-            mime_type_str = msg.sticker.mime_type
-        elif msg.document:
-            file_id_str = msg.document.file_id
-            file_name_str = msg.document.file_name
-            mime_type_str = msg.document.mime_type
-        elif msg.poll:
-            # For polls, we might want to include poll details in the text or a separate field
-            # For now, let's just indicate it's a poll and potentially include the question
-            media_type_str = "poll"
-            # The poll object itself contains question, options, etc.
-            # We could serialize the poll object or extract specific fields
-            # For simplicity, let's add the question to the text if text is empty
-            if not msg.text and msg.poll.question:
-                 text = f"Poll: {msg.poll.question}"
-            # We might need to add a dedicated 'poll' field to the MessageItem model
-            # For now, we'll just rely on media_type and potentially updated text
-
-    return MessageItem(
-        id=msg.id,
-        text=msg.text or (msg.caption if msg.caption else None),
-        sender=sender_name,
-        date=int(msg.date.timestamp()) if msg.date else 0,
-        media_type=media_type_str,
-        file_id=file_id_str,
-        file_name=file_name_str,
-        mime_type=mime_type_str
-        # Add more fields here as needed
-
-@app.post("/api/send_message")
-async def send_message(body: SendMessageBody):
-    """
-    Sends a message to a specified chat (channel, group, or user).
-    Requires a valid session file for the given phone number.
-    """
-    phone_number = body.phone_number
-    chat_id = body.chat_id
-    text = body.text
-    logger.info(f"Received request to send message to chat {chat_id} for {phone_number}")
-
-    try:
-        client = await get_authenticated_client(phone_number)
-        async with client:
-            logger.info(f"Sending message to chat_id {chat_id} for {phone_number}")
-            await client.send_message(chat_id=chat_id, text=text)
-        logger.info(f"Successfully sent message to chat {chat_id} for {phone_number}")
-        return {"message": "Message sent successfully!"}
-    except HTTPException:
-        raise
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered for {phone_number} during send message.")
-        raise HTTPException(status_code=401, detail="Authentication expired. Please login again.")
-    except PeerIdInvalid:
-         logger.warning(f"PeerIdInvalid for chat {chat_id} for user {phone_number}. Chat ID might be incorrect.")
-         raise HTTPException(status_code=400, detail="Invalid chat ID provided.")
-    except Exception as e:
-        logger.error(f"Failed to send message to chat {chat_id} for {phone_number}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="An unexpected error occurred while sending the message.")
-
-class ChannelInfoItem(BaseModel):
+class ChannelInfo(BaseModel):
     id: int
     title: str
-    type: str
     username: Optional[str] = None
     description: Optional[str] = None
     members_count: Optional[int] = None
-    # Add more fields as needed
+    type: str
 
-@app.get("/api/channels/{channel_id}/info", response_model=ChannelInfoItem)
-async def get_channel_info(
-    channel_id: int,
-    phone_number: str = Query(..., description="Phone number of the authenticated user")
-):
-    """
-    Fetches information about a specific channel.
-    Requires a valid session file for the given phone number.
-    """
-    logger.info(f"Received request for channel info for channel {channel_id} for {phone_number}")
+# --- Helper function to get an authenticated client ---
+async def get_authenticated_client() -> Client:
+    logger.info(f"Attempting to get authenticated client for {PHONE_NUMBER}")
+    assert PHONE_NUMBER is not None, "PHONE_NUMBER cannot be None here due to initial checks"
+    session_name = f"user_session_{PHONE_NUMBER.replace('+', '')}"
+    script_dir = Path(__file__).parent
+    session_file = script_dir / f"{session_name}.session"
 
+    if not API_ID or not API_HASH:
+        logger.error("API_ID or API_HASH not configured for get_authenticated_client")
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Server configuration error.")
+
+    if not session_file.exists():
+        logger.error(f"Session file not found for {PHONE_NUMBER}: {session_file}. Please run create_session.py first.")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail=f"Session for {PHONE_NUMBER} not found. Run session creation script.")
+
+    client = Client(name=session_name, api_id=API_ID, api_hash=API_HASH, workdir=str(script_dir))
+    logger.info(f"Authenticated client instance created for {PHONE_NUMBER}")
+    return client
+
+# --- Context manager for Pyrogram client ---
+@asynccontextmanager
+async def pyrogram_client_manager() -> AsyncGenerator[Client, None]:
+    client = await get_authenticated_client()
     try:
-        client = await get_authenticated_client(phone_number)
-        async with client:
-            logger.info(f"Fetching chat info for chat_id {channel_id} for {phone_number}")
-            chat = await client.get_chat(chat_id=channel_id)
-            channel_info = ChannelInfoItem(
-                id=chat.id,
-                title=chat.title,
-                type=chat.type.name.lower(),
-                username=chat.username,
-                description=chat.description,
-                members_count=chat.members_count
+        await client.connect()
+        logger.info(f"Pyrogram client connected for {PHONE_NUMBER}")
+        yield client
+    except AuthKeyUnregistered:
+        logger.error(f"Authentication key unregistered for session {PHONE_NUMBER}. The session might be revoked or expired.")
+        assert PHONE_NUMBER is not None
+        session_file_path = Path(__file__).parent / f"user_session_{PHONE_NUMBER.replace('+', '')}.session"
+        if session_file_path.exists():
+            session_file_path.unlink()
+            logger.info(f"Deleted potentially corrupt session file: {session_file_path}")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Session invalid or expired. Please re-run create_session.py.")
+    except FloodWait as e:
+        logger.warning(f"FloodWait encountered for {PHONE_NUMBER}: {e.value} seconds.")
+        raise HTTPException(status_code=status.HTTP_429_TOO_MANY_REQUESTS, detail=f"Too many requests. Please wait {e.value} seconds.")
+    except Exception as e:
+        logger.error(f"Error during Pyrogram client operation for {PHONE_NUMBER}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Pyrogram client error: {str(e)}")
+    finally:
+        if client.is_connected:
+            await client.disconnect()
+            logger.info(f"Pyrogram client disconnected for {PHONE_NUMBER}")
+
+# --- Root Endpoint ---
+@app.get("/")
+async def root():
+    logger.info("Root endpoint accessed")
+    return {"message": "Welcome to the Telegram Channel Viewer API (Pre-authenticated)"}
+
+# --- Rate Limiting (Optional, if needed) ---
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from slowapi.errors import RateLimitExceeded
+
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_exceeded_handler(request: Request, exc: RateLimitExceeded):
+    client_host = request.client.host if request.client else "Unknown Client"
+    logger.warning(f"Rate limit exceeded for {client_host}: {exc.detail}")
+    return JSONResponse(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        content={"detail": f"Rate limit exceeded: {exc.detail}"},
+    )
+
+# --- API Endpoints ---
+@app.get("/api/dialogs", response_model=List[DialogItem])
+async def list_dialogs():
+    logger.info(f"Received request for dialogs (using session for {PHONE_NUMBER})")
+    dialog_items: List[DialogItem] = []
+    try:
+        async with pyrogram_client_manager() as client:
+            async for dialog in client.get_dialogs():
+                dialog_type_str = "unknown"
+                current_chat = dialog.chat
+                if current_chat and current_chat.type and hasattr(current_chat.type, 'name'):
+                    dialog_type_str = current_chat.type.name.lower()
+                
+                title = "N/A"
+                if current_chat:
+                    if hasattr(current_chat, 'title') and current_chat.title:
+                        title = current_chat.title
+                    elif hasattr(current_chat, 'first_name') and current_chat.first_name:
+                        title = current_chat.first_name
+                        if hasattr(current_chat, 'last_name') and current_chat.last_name:
+                            title += f" {current_chat.last_name}"
+                    elif hasattr(current_chat, 'username') and current_chat.username:
+                        title = current_chat.username
+                
+                if current_chat and hasattr(current_chat, 'id'):
+                    dialog_items.append(DialogItem(
+                        id=current_chat.id,
+                        title=title,
+                        type=dialog_type_str
+                    ))
+        logger.info(f"Successfully fetched {len(dialog_items)} dialogs for {PHONE_NUMBER}")
+        return dialog_items
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching dialogs for {PHONE_NUMBER}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch dialogs: {str(e)}")
+
+@app.get("/api/channels/{channel_id_or_username}/info", response_model=ChannelInfo)
+async def get_channel_info(channel_id_or_username: Union[int, str]):
+    logger.info(f"Request for channel info: {channel_id_or_username} (session: {PHONE_NUMBER})")
+    try:
+        async with pyrogram_client_manager() as client:
+            chat_obj = await client.get_chat(channel_id_or_username) # Type: Union[Chat, ChatPreview]
+            
+            if not chat_obj:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+
+            chat_id = getattr(chat_obj, 'id', None)
+            if chat_id is None:
+                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not retrieve chat ID")
+
+            title = getattr(chat_obj, 'title', None) or getattr(chat_obj, 'first_name', "N/A")
+            username = getattr(chat_obj, 'username', None)
+            description = getattr(chat_obj, 'description', None)
+            members_count = getattr(chat_obj, 'members_count', None)
+            
+            chat_type_str = "unknown"
+            if hasattr(chat_obj, 'type') and chat_obj.type and hasattr(chat_obj.type, 'name'):
+                 chat_type_str = chat_obj.type.name.lower()
+
+            return ChannelInfo(
+                id=chat_id,
+                title=title,
+                username=username,
+                description=description,
+                members_count=members_count,
+                type=chat_type_str
             )
-        logger.info(f"Successfully fetched info for channel {channel_id} for {phone_number}")
-        return channel_info
+    except (ChannelPrivate, ChannelInvalid, PeerIdInvalid, UserNotParticipant):
+        logger.warning(f"Channel not accessible or invalid: {channel_id_or_username}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found, not accessible, or you are not a participant.")
     except HTTPException:
         raise
-    except UserNotParticipant:
-        logger.warning(f"User {phone_number} is not a participant of channel {channel_id} or channel not found.")
-        raise HTTPException(status_code=403, detail="User is not a participant of this channel or channel does not exist.")
-    except PeerIdInvalid:
-         logger.warning(f"PeerIdInvalid for channel {channel_id} for user {phone_number}. Channel ID might be incorrect.")
-         raise HTTPException(status_code=400, detail="Invalid channel ID provided.")
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered for {phone_number} during channel info fetch.")
-        raise HTTPException(status_code=401, detail="Authentication expired. Please login again.")
     except Exception as e:
-        logger.error(f"Failed to get channel info for {channel_id} for {phone_number}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="An unexpected error occurred while fetching channel information.")
+        logger.error(f"Error fetching channel info for {channel_id_or_username}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch channel info: {str(e)}")
 
-class JoinChannelBody(BaseModel):
-    phone_number: str = Field(..., example="+12345678900")
-    channel_id: int = Field(..., description="ID of the channel to join")
-
-@app.post("/api/channels/join")
-async def join_channel(body: JoinChannelBody):
-    """
-    Joins a specific channel.
-    Requires a valid session file for the given phone number.
-    """
-    phone_number = body.phone_number
-    channel_id = body.channel_id
-    logger.info(f"Received request to join channel {channel_id} for {phone_number}")
-
-    try:
-        client = await get_authenticated_client(phone_number)
-        async with client:
-            logger.info(f"Joining channel {channel_id} for {phone_number}")
-            await client.join_chat(chat_id=channel_id)
-        logger.info(f"Successfully joined channel {channel_id} for {phone_number}")
-        return {"message": "Successfully joined channel!"}
-    except HTTPException:
-        raise
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered for {phone_number} during join channel.")
-        raise HTTPException(status_code=401, detail="Authentication expired. Please login again.")
-    except PeerIdInvalid:
-         logger.warning(f"PeerIdInvalid for channel {channel_id} for user {phone_number}. Channel ID might be incorrect.")
-         raise HTTPException(status_code=400, detail="Invalid channel ID provided.")
-    except Exception as e:
-        logger.error(f"Failed to join channel {channel_id} for {phone_number}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="An unexpected error occurred while joining the channel.")
-
-@app.get("/api/channels/{channel_id}/messages", response_model=List[MessageItem])
+@app.get("/api/channels/{channel_id_or_username}/messages", response_model=List[MessageItem])
 async def get_channel_messages(
-    channel_id: int,
-    phone_number: str = Query(..., description="Phone number of the authenticated user"),
-    limit: int = Query(100, ge=1, le=1000, description="Number of messages to fetch (min 1, max 1000)"), # Adjusted max limit and default
-    offset: int = Query(0, ge=0, description="Number of messages to skip (for pagination, must be non-negative)")
-    # offset_id: Optional[int] = Query(None, description="Pass the message ID to start fetching from (older messages)"),
-    # offset_date: Optional[int] = Query(None, description="Pass the message date (Unix timestamp) to start fetching from (older messages)")
+    channel_id_or_username: Union[int, str],
+    limit: int = Query(20, ge=1, le=100),
+    offset_message_id: int = Query(0)
 ):
-    """
-    Fetches messages from a specific channel.
-    Requires a valid session file for the given phone number.
-    """
-    logger.info(f"Received request for messages from channel {channel_id} for {phone_number} with limit {limit} and offset {offset}") # Log request
+    logger.info(f"Request for messages from {channel_id_or_username}, limit {limit}, offset_id {offset_message_id} (session: {PHONE_NUMBER})")
+    messages_data: List[MessageItem] = []
     try:
-        client = await get_authenticated_client(phone_number)
-        messages_items: List[MessageItem] = []
-        async with client: # Handles connect and disconnect
-            logger.info(f"Fetching messages from chat_id {channel_id} for {phone_number}") # Log action
-            async for message in client.get_chat_history(chat_id=channel_id, limit=limit, offset=offset):
-                if isinstance(message, PyrogramMessage): # Ensure it's a message object
-                    messages_items.append(format_message(message))
-        logger.info(f"Successfully fetched {len(messages_items)} messages from channel {channel_id} for {phone_number}") # Log success
-        return messages_items
-    except HTTPException: # Re-raise HTTPExceptions from get_authenticated_client or previous specific handlers
-        raise
-    except UserNotParticipant:
-        logger.warning(f"User {phone_number} is not a participant in channel {channel_id}.")
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a participant in this channel or the channel is private and you are not a member.")
-    except PeerIdInvalid:
-        logger.warning(f"Invalid channel_id (PeerIdInvalid): {channel_id} provided by user {phone_number}.")
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found. The provided ID is invalid or the chat does not exist.")
-    except AuthKeyUnregistered:
-        logger.warning(f"AuthKeyUnregistered for {phone_number} during message fetch from channel {channel_id}.")
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Authentication key is unregistered. Session is invalid. Please login again.")
-    except Exception as e:
-        error_type = type(e).__name__
-        logger.error(f"Failed to fetch messages for channel {channel_id} for user {phone_number}. Error type: {error_type}, Details: {e}", exc_info=True)
-        # Example of checking specific error strings if Pyrogram lacks distinct exceptions:
-        # if "CHANNEL_PRIVATE" in str(e) or "CHAT_ADMIN_REQUIRED" in str(e):
-        #     raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Cannot access this channel. It might be private or require admin rights.")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"An unexpected error occurred while fetching messages: {error_type}")
+        async with pyrogram_client_manager() as client:
+            history_params: dict[str, Any] = {"chat_id": channel_id_or_username, "limit": limit}
+            if offset_message_id > 0:
+                history_params["offset_id"] = offset_message_id
 
-# To run this: uvicorn main:app --reload (from the backend directory with venv active)
+            async for msg in client.get_chat_history(**history_params): # msg is PyrogramMessage
+                if not isinstance(msg, PyrogramMessage): continue
+
+                sender_str = "N/A"
+                if msg.from_user:
+                    sender_str = msg.from_user.first_name or str(msg.from_user.id)
+                    if msg.from_user.last_name:
+                        sender_str += f" {msg.from_user.last_name}"
+                elif msg.sender_chat: # For messages from channels
+                    sender_str = msg.sender_chat.title or str(msg.sender_chat.id)
+                
+                media_type_str: Optional[str] = None
+                file_id_str: Optional[str] = None
+                file_name_str: Optional[str] = None
+                mime_type_str: Optional[str] = None
+                poll_data_obj: Optional[PollDetails] = None
+
+                if msg.media and isinstance(msg.media, pyrogram.enums.MessageMediaType):
+                    media_type_str = msg.media.name.lower() # Use enum's name
+
+                    if msg.photo:
+                        file_id_str = msg.photo.file_id
+                    elif msg.video:
+                        file_id_str = msg.video.file_id
+                        file_name_str = msg.video.file_name
+                        mime_type_str = msg.video.mime_type
+                    elif msg.audio:
+                        file_id_str = msg.audio.file_id
+                        file_name_str = msg.audio.file_name
+                        mime_type_str = msg.audio.mime_type
+                    elif msg.document:
+                        file_id_str = msg.document.file_id
+                        file_name_str = msg.document.file_name
+                        mime_type_str = msg.document.mime_type
+                    elif msg.poll and isinstance(msg.poll, Poll): # Check if it's a Poll object
+                        pyro_poll = msg.poll
+                        poll_type_name = "unknown"
+                        if pyro_poll.type and hasattr(pyro_poll.type, 'name'):
+                             poll_type_name = pyro_poll.type.name.lower()
+
+                        poll_data_obj = PollDetails(
+                            question=pyro_poll.question,
+                            options=[PollOptionItem(text=opt.text, data=opt.data) for opt in pyro_poll.options],
+                            total_voters=getattr(pyro_poll, 'total_voters', None),
+                            is_closed=pyro_poll.is_closed,
+                            is_anonymous=pyro_poll.is_anonymous,
+                            type=poll_type_name,
+                            allows_multiple_answers=pyro_poll.allows_multiple_answers,
+                            quiz_correct_option_id=pyro_poll.correct_option_id
+                        )
+                        # media_type_str is already "poll" from msg.media.name.lower()
+                
+                msg_date_timestamp = 0
+                if msg.date and isinstance(msg.date, datetime.datetime):
+                    msg_date_timestamp = int(msg.date.timestamp())
+
+                messages_data.append(MessageItem(
+                    id=msg.id,
+                    text=msg.text or msg.caption, # Handles both text and caption for media
+                    sender=sender_str,
+                    date=msg_date_timestamp,
+                    media_type=media_type_str,
+                    file_id=file_id_str,
+                    file_name=file_name_str,
+                    mime_type=mime_type_str,
+                    poll_data=poll_data_obj
+                ))
+        logger.info(f"Fetched {len(messages_data)} messages from {channel_id_or_username} for {PHONE_NUMBER}")
+        return messages_data
+    except (ChannelPrivate, ChannelInvalid, PeerIdInvalid, UserNotParticipant):
+        logger.warning(f"Channel not accessible or invalid for messages: {channel_id_or_username}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found, not accessible, or you are not a participant.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching messages from {channel_id_or_username} for {PHONE_NUMBER}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch messages: {str(e)}")
+
+@app.post("/api/channels/join", status_code=status.HTTP_200_OK)
+async def join_telegram_channel(body: JoinChannelBody):
+    logger.info(f"Request to join channel/group: {body.invite_link} (session: {PHONE_NUMBER})")
+    try:
+        async with pyrogram_client_manager() as client:
+            joined_chat = await client.join_chat(body.invite_link) # Type: Chat
+            logger.info(f"Successfully joined chat: {getattr(joined_chat, 'title', joined_chat.id)} for {PHONE_NUMBER}")
+            
+            chat_type_name = "unknown"
+            if joined_chat.type and hasattr(joined_chat.type, 'name'):
+                chat_type_name = joined_chat.type.name.lower()
+
+            return {
+                "message": "Successfully joined chat",
+                "chat_id": joined_chat.id,
+                "title": getattr(joined_chat, 'title', None) or getattr(joined_chat, 'first_name', "N/A"),
+                "type": chat_type_name
+            }
+    except (InviteHashExpired, InviteHashInvalid):
+        logger.warning(f"Invalid or expired invite link: {body.invite_link}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invite link is invalid or has expired.")
+    except PeerIdInvalid:
+        logger.warning(f"Cannot find chat by invite link/username: {body.invite_link}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found with the provided link/username.")
+    except UserNotParticipant: # Should not be primary error for join_chat but covering edge cases
+        logger.warning(f"User already a participant or other issue with joining {body.invite_link}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Could not join chat. User might already be a participant or other restriction.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error joining channel {body.invite_link} for {PHONE_NUMBER}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to join channel: {str(e)}")
+
+@app.post("/api/send_message", status_code=status.HTTP_201_CREATED)
+async def send_message_to_chat(body: SendMessageBody):
+    logger.info(f"Request to send message to {body.chat_id} (session: {PHONE_NUMBER})")
+    try:
+        async with pyrogram_client_manager() as client:
+            sent_message = await client.send_message(chat_id=body.chat_id, text=body.text) # Type: Message
+            logger.info(f"Message sent to {body.chat_id} by {PHONE_NUMBER}, message_id: {sent_message.id}")
+            return {
+                "message": "Message sent successfully",
+                "chat_id": sent_message.chat.id, # Accessing chat.id from Message object
+                "message_id": sent_message.id
+            }
+    except PeerIdInvalid:
+        logger.warning(f"Cannot send message, invalid chat_id: {body.chat_id}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat ID not found or invalid.")
+    except UserNotParticipant:
+        logger.warning(f"Cannot send message to {body.chat_id}, user not a participant.", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a participant of this chat or sending messages is restricted.")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error sending message to {body.chat_id} for {PHONE_NUMBER}: {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to send message: {str(e)}")
+
+@app.get("/api/media/{chat_id}/{message_id}/{file_id_or_type}")
+async def get_media_file_endpoint(
+    chat_id: Union[int, str],
+    message_id: int,
+    file_id_or_type: str 
+):
+    logger.info(f"Request for media: chat_id={chat_id}, msg_id={message_id}, file_id/type='{file_id_or_type}' (session: {PHONE_NUMBER})")
+    try:
+        async with pyrogram_client_manager() as client:
+            # get_messages returns Optional[Message] if a single message_id is passed
+            message_obj = await client.get_messages(chat_id=chat_id, message_ids=message_id) 
+            
+            if not message_obj or not isinstance(message_obj, PyrogramMessage):
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Message not found or inaccessible.")
+
+            actual_file_id_to_download: Optional[str] = None
+            file_name_for_response = "downloaded_media"
+            mime_type_for_response = "application/octet-stream"
+
+            if message_obj.media:
+                requested_type_lower = file_id_or_type.lower()
+                # Check specific media types first
+                if requested_type_lower == "photo" and message_obj.photo:
+                    actual_file_id_to_download = message_obj.photo.file_id
+                    file_name_for_response = f"{message_obj.photo.file_unique_id}.jpg"
+                    mime_type_for_response = "image/jpeg"
+                elif requested_type_lower == "video" and message_obj.video:
+                    actual_file_id_to_download = message_obj.video.file_id
+                    file_name_for_response = message_obj.video.file_name or f"{message_obj.video.file_unique_id}.mp4"
+                    mime_type_for_response = message_obj.video.mime_type or "video/mp4"
+                elif requested_type_lower == "document" and message_obj.document:
+                    actual_file_id_to_download = message_obj.document.file_id
+                    file_name_for_response = message_obj.document.file_name or f"{message_obj.document.file_unique_id}.dat"
+                    mime_type_for_response = message_obj.document.mime_type or "application/octet-stream"
+                elif requested_type_lower == "audio" and message_obj.audio:
+                    actual_file_id_to_download = message_obj.audio.file_id
+                    file_name_for_response = message_obj.audio.file_name or f"{message_obj.audio.file_unique_id}.mp3"
+                    mime_type_for_response = message_obj.audio.mime_type or "audio/mpeg"
+                # Add other specific types like voice, video_note, sticker, animation if needed
+                
+                # If not matched by type, check if file_id_or_type is an actual file_id present on the message
+                if not actual_file_id_to_download:
+                    media_attributes = ['photo', 'video', 'audio', 'document', 'voice', 'video_note', 'sticker', 'animation']
+                    for attr_name in media_attributes:
+                        media_attr_obj = getattr(message_obj, attr_name, None)
+                        if media_attr_obj and hasattr(media_attr_obj, 'file_id') and media_attr_obj.file_id == file_id_or_type:
+                            actual_file_id_to_download = media_attr_obj.file_id
+                            if hasattr(media_attr_obj, 'file_name') and media_attr_obj.file_name:
+                                file_name_for_response = media_attr_obj.file_name
+                            elif hasattr(media_attr_obj, 'file_unique_id'):
+                                ext_map = {"photo": ".jpg", "video": ".mp4", "audio": ".mp3"}
+                                ext = ext_map.get(attr_name, ".dat")
+                                file_name_for_response = f"{media_attr_obj.file_unique_id}{ext}"
+                            if hasattr(media_attr_obj, 'mime_type') and media_attr_obj.mime_type:
+                                mime_type_for_response = media_attr_obj.mime_type
+                            break
+            
+            if not actual_file_id_to_download:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Media '{file_id_or_type}' not found on message, or message has no such media, or type is not downloadable directly.")
+
+            logger.info(f"Attempting to download file_id: {actual_file_id_to_download}")
+            
+            file_stream: Optional[io.BytesIO] = await client.download_media(
+                message=actual_file_id_to_download,
+                in_memory=True
+            )
+
+            if not file_stream:
+                logger.error(f"Download_media returned None for file_id: {actual_file_id_to_download}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error processing media file after download.")
+            
+            file_stream.seek(0)
+
+            return StreamingResponse(
+                file_stream,
+                media_type=mime_type_for_response,
+                headers={"Content-Disposition": f"attachment; filename=\"{file_name_for_response}\""}
+            )
+
+    except PeerIdInvalid:
+        logger.warning(f"Media download: Invalid chat_id: {chat_id}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat ID not found or invalid.")
+    except UserNotParticipant:
+        logger.warning(f"Media download: User not participant in chat {chat_id}", exc_info=False)
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User is not a participant of this chat.")
+    except HTTPException: # Re-raise already formed HTTPExceptions
+        raise
+    except Exception as e:
+        logger.error(f"Error downloading media (chat: {chat_id}, msg: {message_id}, file: {file_id_or_type}): {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to download media: {str(e)}")
+
+if __name__ == "__main__":
+    import uvicorn
+    logger.info("Starting Uvicorn server directly from main.py (for debugging)")
+    # Ensure TELEGRAM_API_ID, TELEGRAM_API_HASH, and PHONE_NUMBER are available if running this way
+    if not all([API_ID_STR, API_HASH, PHONE_NUMBER]):
+        print("ERROR: TELEGRAM_API_ID, TELEGRAM_API_HASH, and PHONE_NUMBER must be set in .env or environment.")
+    else:
+        uvicorn.run(app, host="0.0.0.0", port=8000)
