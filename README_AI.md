@@ -1,8 +1,8 @@
 # Telegram Web Viewer (User Account) - Developer Handoff & AI Collaboration Guide
 
-**Version:** 1.1.1 (As of 2025-05-21 - *Please update with current date upon major handoff*)
-**Last Updated By:** Cline (AI Assistant)
-**Reason for Update:** Enhanced backend message handling: improved peer ID resolution and added `is_outgoing` flag for UI.
+**Version:** 1.2.0 (As of 2025-05-21 - *Please update with current date upon major handoff*)
+**Last Updated By:** Roo (AI Assistant)
+**Reason for Update:** Refactored backend Pyrogram client management to use a single shared instance, improving stability and preventing "database is locked" errors. Added AI collaboration guidelines for large code changes.
 
 ## 1. Introduction for Collaborators
 
@@ -99,7 +99,10 @@ This project aims to build a responsive web application that allows a user to vi
 *   **Session Management:**
     *   Authentication is handled by a pre-generated Pyrogram `.session` file in the `backend/` directory.
     *   The `backend/create_session.py` script is used to generate this session file.
-    *   The FastAPI backend (`main.py`) loads this session on startup to initialize an authenticated Pyrogram client. All subsequent API calls use this single, pre-authenticated client.
+    *   The FastAPI backend (`main.py`) initializes and connects a single Pyrogram client instance during the application `startup_event`. This client is stored in `app.state.pyrogram_client`.
+    *   API endpoints receive this shared client instance via a FastAPI dependency (`Depends(get_current_client)`).
+    *   The client is disconnected during the application `shutdown_event`.
+    *   This approach ensures all API requests use the same client, preventing SQLite "database is locked" errors associated with concurrent client connections.
     *   **Security Note:** Session files are highly sensitive. Ensure the `backend/` directory and its `.session` files are secured and not publicly accessible or committed to version control (ensure `.gitignore` covers `*.session`).
 *   **Primary Frontend Location:** The core, active frontend is in the project's root `src/` directory. The `frontend/` subdirectory is a separate, older/alternative setup.
 *   **Media Handling:**
@@ -150,8 +153,9 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 ## 8. Development Status
 
 *   **Backend:**
+    *   **Pyrogram Client Management:** Refactored to use a single, shared Pyrogram client instance. The client is initialized at application startup (`startup_event`), connected, and stored in `app.state.pyrogram_client`. It's disconnected at application shutdown (`shutdown_event`). API endpoints access the client via a dependency (`get_current_client`). This resolves previous "database is locked" issues with SQLite due to multiple client initializations.
     *   Switched to session-file based authentication using `create_session.py`.
-    *   API endpoints updated to use the pre-loaded session, removing `phone_number` dependencies.
+    *   API endpoints updated to use the shared, pre-loaded session.
     *   `aiosqlite` and `slowapi` usage might be reduced or removed if old auth endpoints are deprecated.
     *   **Message Fetching (`get_channel_messages`):**
         *   Significantly improved peer resolution logic to correctly handle various `channel_id_or_username` inputs:
@@ -224,6 +228,13 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 
 *   **Project Owner/Lead:** [Insert Name/Contact Method Here]
 *   **Previous AI Collaborator:** Cline (via current interaction platform)
+
+## 14. AI Collaboration Guidelines
+
+*   **Applying Code Changes:**
+    *   When providing diffs or code changes, if the total number of lines to be modified (added, removed, or changed) is substantial (e.g., over ~200 lines for a single file modification), it's preferable to break down the changes into smaller, logical parts.
+    *   If a large diff fails to apply, the AI should attempt to send the changes in smaller segments or ask the user for permission to send the file content in parts for manual review and application.
+    *   Always wait for confirmation of successful application of one part before sending the next.
 
 ---
 *This handoff document is intended to be a living document. Please update it as the project evolves.*
