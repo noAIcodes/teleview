@@ -187,6 +187,7 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 *   **Code Cleanup (Backend):**
     *   Old authentication logic (routes, helper functions, `aiosqlite` usage for `phone_code_hash`) in `backend/main.py` should be removed if fully deprecated.
 *   **Styling:** The UI has been modernized and a dark mode toggle added. Further refinements and consistency checks for the new UI could be beneficial.
+    *   **ChannelMessages Layout:** The send message input box in `ChannelMessages.vue` is often not visible or requires scrolling the entire page. The message list itself is currently non-scrollable, preventing independent scrolling of messages as intended. This core layout issue is likely due to complex CSS flexbox interactions and height/overflow calculations between `App.vue` and `ChannelMessages.vue` that need further investigation. This also blocks full testing of features like "load more messages".
 
 ## 11. Next Steps for AI (Development Roadmap)
 

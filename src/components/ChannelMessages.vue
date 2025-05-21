@@ -36,9 +36,14 @@
     </div>
     
     <div class="message-list-container" ref="messageListContainerRef">
+      <div v-if="hasMoreMessages && !loading && messages.length > 0" class="load-more-container">
+        <button @click="loadMoreMessages" :disabled="loadingMore" class="load-more-button">
+          {{ loadingMore ? 'Loading...' : 'Load More Messages' }}
+        </button>
+      </div>
       <div v-if="messages.length" class="message-list">
-        <div v-for="message in messages" :key="message.id" 
-             class="message-item" 
+        <div v-for="message in messages" :key="message.id"
+             class="message-item"
              :class="{ 'sent': message.is_outgoing, 'received': !message.is_outgoing }">
           
           <div class="message-bubble">
@@ -133,18 +138,28 @@ const props = defineProps({
 const emit = defineEmits(['back-to-dialogs']);
 
 const messages = ref([]);
-const loading = ref(true);
+const loading = ref(true); // For initial load
 const error = ref(null);
-const newMessageText = ref(''); // For the input field
-const messageListContainerRef = ref(null); // For scrolling to bottom
+const newMessageText = ref('');
+const messageListContainerRef = ref(null);
 const channelInfoData = ref(null);
 const channelInfoError = ref(null);
 
-const scrollToBottom = async () => {
-  await nextTick(); // Wait for DOM updates
+const messagesPerPage = 10;
+const currentOffset = ref(0);
+const hasMoreMessages = ref(true);
+const loadingMore = ref(false); // For "load more" action
+
+const scrollToBottom = async (force = false) => {
+  await nextTick();
   const container = messageListContainerRef.value;
   if (container) {
-    container.scrollTop = container.scrollHeight;
+    // Only scroll to bottom if it's an initial load or a new message sent by user
+    // For loading more, user might want to stay at their current scroll position.
+    // However, if force is true (e.g. new channel loaded), scroll to bottom.
+    if (force || (!loadingMore.value && currentOffset.value <= messagesPerPage)) {
+       container.scrollTop = container.scrollHeight;
+    }
   }
 };
 
@@ -156,7 +171,6 @@ const getMediaUrl = (fileId, fileName = null) => {
 const imageLoadError = (event) => {
   console.error("Error loading image:", event.target.src);
   event.target.alt = "Image failed to load";
-  // Optionally add a class to style broken images
 };
 
 const calculatePollPercentage = (voters, total_voters) => {
@@ -181,66 +195,93 @@ const fetchChannelInfo = async (id) => {
   }
 };
 
-const fetchMessages = async (channel) => {
+const fetchMessages = async (channel, isLoadingMore = false) => {
   if (!channel) {
     messages.value = [];
     loading.value = false;
+    loadingMore.value = false;
     return;
   }
-  try {
+
+  if (isLoadingMore) {
+    loadingMore.value = true;
+  } else {
     loading.value = true;
-    error.value = null;
-    // Simulate is_outgoing for demo purposes if not present in API
-    const response = await axios.get(`http://localhost:8000/api/channels/${channel}/messages`);
-    messages.value = response.data.map((msg, index) => ({
+    currentOffset.value = 0; // Reset offset for initial load
+    messages.value = []; // Clear messages for initial load of a channel
+  }
+  error.value = null;
+
+  try {
+    const response = await axios.get(`http://localhost:8000/api/channels/${channel}/messages?limit=${messagesPerPage}&offset=${currentOffset.value}`);
+    const newMessages = response.data.map((msg, index) => ({
       ...msg,
-      // Example: make every other message "outgoing" if API doesn't provide this
-      is_outgoing: msg.is_outgoing !== undefined ? msg.is_outgoing : (index % 2 === 0), // Prefer API, fallback to demo
-      // Ensure poll_data exists and has options
+      is_outgoing: msg.is_outgoing !== undefined ? msg.is_outgoing : ((currentOffset.value + index) % 2 === 0), // Keep demo logic if needed
       poll_data: msg.media_type === 'poll' ? (msg.poll_data || { options: [], question: 'Poll Question Missing' }) : null
     }));
-    scrollToBottom();
+
+    if (isLoadingMore) {
+      messages.value = [...newMessages, ...messages.value]; // Prepend older messages
+    } else {
+      messages.value = newMessages;
+    }
+
+    currentOffset.value += newMessages.length;
+    hasMoreMessages.value = newMessages.length === messagesPerPage;
+
+    if (!isLoadingMore) {
+      scrollToBottom(true); // Scroll to bottom on initial load
+    }
+
   } catch (err) {
     console.error('Error fetching messages:', err);
     error.value = err.response?.data?.detail || 'Failed to fetch messages.';
   } finally {
-    loading.value = false;
+    if (isLoadingMore) {
+      loadingMore.value = false;
+    } else {
+      loading.value = false;
+    }
+  }
+};
+
+const loadMoreMessages = () => {
+  if (hasMoreMessages.value && !loadingMore.value && !loading.value) {
+    fetchMessages(props.channelId, true);
   }
 };
 
 const sendMessage = () => {
   if (newMessageText.value.trim() === '') return;
-  // Placeholder for send message logic
   console.log('Sending message:', newMessageText.value);
-  // Add to messages list (optimistic update) - this is a mock
   messages.value.push({
-    id: Date.now(), // Temporary ID
+    id: Date.now(),
     text: newMessageText.value,
-    sender: 'You', // Or actual sender
+    sender: 'You',
     date: Math.floor(Date.now() / 1000),
     is_outgoing: true,
     media_type: null,
   });
   newMessageText.value = '';
-  scrollToBottom();
+  scrollToBottom(true); // Force scroll to bottom after sending a message
 };
 
-
 onMounted(() => {
-  fetchMessages(props.channelId);
   fetchChannelInfo(props.channelId);
+  fetchMessages(props.channelId); // Initial fetch
 });
 
 watch(() => props.channelId, (newChannelId) => {
-  fetchMessages(newChannelId);
   fetchChannelInfo(newChannelId);
   messages.value = []; // Clear previous messages
   channelInfoData.value = null; // Clear previous channel info
+  currentOffset.value = 0; // Reset offset
+  hasMoreMessages.value = true; // Assume there are messages
+  error.value = null; // Clear previous errors
+  fetchMessages(newChannelId); // Fetch for new channel
 });
 
-watch(messages, () => { // Scroll to bottom when messages change
-  scrollToBottom();
-}, { deep: true });
+// Removed the generic watch on messages for scrollToBottom, handled more explicitly now.
 
 </script>
 
@@ -596,6 +637,42 @@ watch(messages, () => { // Scroll to bottom when messages change
 .send-action-button .icon {
   width: 20px;
   height: 20px;
+}
+
+.load-more-container {
+  display: flex;
+  justify-content: center;
+  padding: 0.75rem 0;
+}
+
+.load-more-button {
+  padding: 0.5rem 1rem;
+  font-size: 0.85rem;
+  background-color: var(--surface-color);
+  color: var(--primary-color);
+  border: 1px solid var(--primary-color);
+  border-radius: 0.375rem;
+  cursor: pointer;
+  transition: background-color 0.2s, color 0.2s;
+}
+
+.load-more-button:hover:not(:disabled) {
+  background-color: var(--primary-color);
+  color: var(--button-text-color);
+}
+
+.load-more-button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+.dark-mode .load-more-button {
+  background-color: var(--surface-color);
+  color: var(--primary-color);
+  border: 1px solid var(--primary-color);
+}
+.dark-mode .load-more-button:hover:not(:disabled) {
+  background-color: var(--primary-color);
+  color: var(--button-text-color);
 }
 
 </style>

@@ -58,7 +58,7 @@ const backToDialogs = () => {
   flex-grow: 1; /* Allows content area to fill available space */
   display: flex; /* To make sure child components can also flex grow */
   flex-direction: column;
-  /* overflow: hidden; */ /* Temporarily commented out to test footer visibility */
+  overflow: hidden; /* Prevent double scrollbars if children manage their own */
 }
 
 /* Ensure DialogList and ChannelMessages fill the content-area */
