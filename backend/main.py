@@ -202,8 +202,8 @@ async def list_dialogs(client: Client = Depends(get_current_client)): # MODIFIED
     try:
         # client is now injected by Depends(get_current_client)
         dialogs_iterable = client.get_dialogs()
-        if dialogs_iterable: 
-            async for dialog in dialogs_iterable: 
+        if dialogs_iterable:
+            async for dialog in dialogs_iterable:
                 dialog_type_str = "unknown"
                 current_chat = dialog.chat
                 if current_chat and current_chat.type and hasattr(current_chat.type, 'name'):
@@ -267,7 +267,7 @@ async def get_channel_info(channel_id_or_username: Union[int, str], client: Clie
         except PeerIdInvalid:
             logger.warning(f"PeerIdInvalid for {peer_to_get_info_for} in get_channel_info. Attempting to find in dialogs if numeric.")
             if is_numeric_id:
-                numeric_id_to_find = int(peer_to_get_info_for) 
+                numeric_id_to_find = int(peer_to_get_info_for)
                 dialogs_generator = client.get_dialogs()
                 found_in_dialogs = False
                 if dialogs_generator:
@@ -327,10 +327,10 @@ async def get_channel_info(channel_id_or_username: Union[int, str], client: Clie
 async def get_channel_messages(
     channel_id_or_username: Union[int, str],
     limit: int = Query(20, ge=1, le=100),
-    offset_message_id: int = Query(0),
+    offset: int = Query(0),  # Renamed from offset_message_id
     client: Client = Depends(get_current_client) # MODIFIED
 ):
-    logger.info(f"Request for messages from {channel_id_or_username}, limit {limit}, offset_id {offset_message_id} (session: {PHONE_NUMBER})")
+    logger.info(f"Request for messages from {channel_id_or_username}, limit {limit}, offset {offset} (session: {PHONE_NUMBER})")
     messages_data: List[MessageItem] = []
     
     peer_to_process: Union[int, str]
@@ -400,11 +400,15 @@ async def get_channel_messages(
                     detail=f"Channel/Username {current_username} is invalid, private, or not accessible: {str(e)}"
                 )
         
-        history_params: dict[str, Any] = {"chat_id": resolved_peer_for_history, "limit": limit}
-        if offset_message_id > 0:
-            history_params["offset_id"] = offset_message_id
+        history_params: dict[str, Any] = {
+            "chat_id": resolved_peer_for_history,
+            "limit": limit,
+            "offset": offset  # Use the 'offset' parameter directly
+        }
+        # if offset > 0: # Pyrogram's get_chat_history handles offset=0 correctly (no skip)
+        #     history_params["offset"] = offset
 
-        messages_generator = client.get_chat_history(**history_params) 
+        messages_generator = client.get_chat_history(**history_params)
         if messages_generator:
             async for msg in messages_generator:
                 if not isinstance(msg, PyrogramMessage): continue

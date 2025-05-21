@@ -1,8 +1,8 @@
 # Telegram Web Viewer (User Account) - Developer Handoff & AI Collaboration Guide
 
-**Version:** 1.2.0 (As of 2025-05-21)
-**Last Updated By:** Cline (AI Assistant)
-**Reason for Update:** Resolved critical CSS layout issues causing non-scrollable message and dialog lists by applying `min-height: 0` to relevant flex containers in `App.vue`, `ChannelMessages.vue`, and `DialogList.vue`.
+**Version:** 1.2.1 (As of 2025-05-21)
+**Last Updated By:** Roo (AI Assistant)
+**Reason for Update:** Fixed a bug in the backend ([`backend/main.py`](backend/main.py:327)) where the "Load More Messages" button in [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue) would reload initial messages instead of older ones. Corrected `offset` parameter handling in the `/api/channels/{channel_id}/messages` endpoint.
 
 ## 1. Introduction for Collaborators
 
