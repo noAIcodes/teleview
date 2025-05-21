@@ -12,7 +12,7 @@ Our goal is to enable a smooth transition and facilitate productive contribution
 
 ## 2. Project Overview
 
-This project aims to build a responsive web application that allows a user to view content from their subscribed Telegram channels directly in a web browser using their personal account. Authentication is handled by creating a session file on the backend, which is then used for all API interactions.
+This project aims to build a responsive web application that allows a user to view content from their subscribed Telegram channels directly in a web browser using their personal account. The application features a modern user interface and includes a dark mode toggle for user comfort. Authentication is handled by creating a session file on the backend, which is then used for all API interactions.
 
 **Typical User Flow:**
 1.  **Session Creation (One-time or as needed):** User runs `backend/create_session.py` to generate a Telegram session file (e.g., `user_session_YOUR_PHONE_NUMBER.session`). This involves entering their phone number and a login code received via Telegram.
@@ -38,7 +38,7 @@ This project aims to build a responsive web application that allows a user to vi
         *   `slowapi`: (Verify usage - was for rate limiting auth endpoints, may be less relevant now).
 *   **Database:** SQLite
     *   **Rationale:** Pyrogram manages the main user session files (`.session`). `telegram_sessions.db` was used for temporary `phone_code_hash` during the old interactive login flow; its current role with `create_session.py` needs verification.
-*   **Styling:** Basic CSS in `src/style.css`. (The `frontend/` directory has Tailwind CSS, but the primary app is in `src/`).
+*   **Styling:** Enhanced with a modern UI and a dark mode toggle, primarily managed via `src/style.css` and Vue component styles. (The `frontend/` directory has Tailwind CSS, but the primary app is in `src/`).
 
 ## 4. Project Setup
 
@@ -158,10 +158,12 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
     *   `App.vue` directly renders `DialogList.vue`.
     *   `DialogList.vue` and `ChannelMessages.vue` updated to call APIs without `phone_number`.
     *   Media display (images, downloads) and poll display remain functional.
+    *   Implemented a modern user interface refresh.
+    *   Added a dark mode toggle for user preference.
 
 ## 9. Frontend Components Overview (Root `src/` directory)
 
-*   **`App.vue`**: Main root component. Directly renders `DialogList` or `ChannelMessages` based on `selectedChannelId`.
+*   **`App.vue`**: Main root component. Directly renders `DialogList` or `ChannelMessages` based on `selectedChannelId`. Likely incorporates the dark mode toggle functionality.
 *   **`DialogList.vue`**: Displays user's Telegram dialogs. Fetches from `/api/dialogs` (backend uses its pre-authenticated session). Emits `select-channel`.
 *   **`ChannelMessages.vue`**: Displays messages. Fetches from `/api/channels/{channel_id}/messages`. Handles media and polls. Emits `back-to-dialogs`.
 
@@ -175,7 +177,7 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
     *   Rate limiting: If old auth endpoints are removed, `slowapi` might be unnecessary. Consider if other endpoints need protection.
 *   **Code Cleanup (Backend):**
     *   Old authentication logic (routes, helper functions, `aiosqlite` usage for `phone_code_hash`) in `backend/main.py` should be removed if fully deprecated.
-*   **Styling:** UI is basic. `src/style.css` is minimal.
+*   **Styling:** The UI has been modernized and a dark mode toggle added. Further refinements and consistency checks for the new UI could be beneficial.
 
 ## 11. Next Steps for AI (Development Roadmap)
 
@@ -188,7 +190,7 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 
 **Medium Priority:**
 4.  **Error Handling & User Feedback (Full Stack):** Refine for clarity.
-5.  **Styling/UI Consistency:** Improve `src/style.css` or integrate a framework like Tailwind CSS properly into `src/`.
+5.  **Styling/UI Consistency:** Review and ensure consistency across the new modern UI and dark mode. Further improve `src/style.css` or integrate a framework like Tailwind CSS properly into `src/` if desired for more advanced styling.
 
 **Low Priority / Future Considerations:**
 6.  **Advanced Features:** Sending media, real-time updates (WebSockets).
@@ -208,7 +210,7 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 *   Task 2.3 (Full Stack): Enhance error handling and user feedback.
 
 **Phase 3: UI/UX Enhancements**
-*   Task 3.1 (Frontend): Improve overall styling and UI consistency.
+*   Task 3.1 (Frontend): Further refine the modern UI and dark mode implementation. Ensure consistency and address any UX feedback.
 
 **Phase 4: Feature Expansion (Future)**
 *   Task 4.1: Consider poll voting, sending media, etc.

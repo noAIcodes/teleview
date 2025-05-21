@@ -8,6 +8,8 @@ This project is a web-based Telegram client that allows you to view your dialogs
 - Select a dialog to view its messages.
 - Basic media display (images, download links for other files).
 - Session-based authentication for Telegram.
+- Modern user interface for an enhanced user experience.
+- Dark mode toggle for user preference.
 
 ## Technologies Used
 

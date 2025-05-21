@@ -269,6 +269,18 @@ async def get_channel_messages(
     messages_data: List[MessageItem] = []
     try:
         async with pyrogram_client_manager() as client:
+            # Attempt to "meet" the peer first to resolve potential PeerIdInvalid issues for get_chat_history
+            try:
+                await client.get_chat(channel_id_or_username)
+                logger.info(f"Successfully 'met' peer {channel_id_or_username} before fetching history.")
+            except (PeerIdInvalid, ChannelInvalid, ChannelPrivate, UserNotParticipant) as e:
+                # If get_chat itself fails with these, it's a definitive issue with accessing the chat.
+                logger.warning(f"Failed to 'meet' peer {channel_id_or_username} due to: {type(e).__name__} - {e}")
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND, 
+                    detail=f"Channel/Peer ID {channel_id_or_username} is invalid, private, or not accessible: {str(e)}"
+                )
+            # If get_chat succeeds, proceed to get history
             history_params: dict[str, Any] = {"chat_id": channel_id_or_username, "limit": limit}
             if offset_message_id > 0:
                 history_params["offset_id"] = offset_message_id
