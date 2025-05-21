@@ -95,6 +95,7 @@ class MessageItem(BaseModel):
     file_name: Optional[str] = None
     mime_type: Optional[str] = None
     poll_data: Optional[PollDetails] = None
+    is_outgoing: Optional[bool] = None # Added to indicate if the message is from the authenticated user
 
 class SendMessageBody(BaseModel):
     chat_id: Union[int, str] = Field(..., description="ID or username of the chat to send the message to")
@@ -239,7 +240,8 @@ async def get_channel_info(channel_id_or_username: Union[int, str]):
             members_count = getattr(chat_obj, 'members_count', None)
             
             chat_type_str = "unknown"
-            if hasattr(chat_obj, 'type') and chat_obj.type and hasattr(chat_obj.type, 'name'):
+            # Ensure chat_obj.type is an enum and has a name attribute
+            if hasattr(chat_obj, 'type') and chat_obj.type and isinstance(chat_obj.type, pyrogram.enums.ChatType) and hasattr(chat_obj.type, 'name'):
                  chat_type_str = chat_obj.type.name.lower()
 
             return ChannelInfo(
@@ -267,21 +269,76 @@ async def get_channel_messages(
 ):
     logger.info(f"Request for messages from {channel_id_or_username}, limit {limit}, offset_id {offset_message_id} (session: {PHONE_NUMBER})")
     messages_data: List[MessageItem] = []
+    
+    peer_to_process: Union[int, str]
+    is_numeric_id = False
+
+    if isinstance(channel_id_or_username, int):
+        peer_to_process = channel_id_or_username
+        is_numeric_id = True
+    elif isinstance(channel_id_or_username, str):
+        try:
+            peer_to_process = int(channel_id_or_username)
+            is_numeric_id = True
+            logger.info(f"Successfully parsed '{channel_id_or_username}' as numeric ID: {peer_to_process}")
+        except ValueError:
+            peer_to_process = channel_id_or_username # Treat as username
+            is_numeric_id = False
+            logger.info(f"Treating '{channel_id_or_username}' as a username string.")
+    else:
+        # Should not happen with Union[int, str] type hint, but as a safeguard
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid channel_id_or_username type.")
+
     try:
         async with pyrogram_client_manager() as client:
-            # Attempt to "meet" the peer first to resolve potential PeerIdInvalid issues for get_chat_history
-            try:
-                await client.get_chat(channel_id_or_username)
-                logger.info(f"Successfully 'met' peer {channel_id_or_username} before fetching history.")
-            except (PeerIdInvalid, ChannelInvalid, ChannelPrivate, UserNotParticipant) as e:
-                # If get_chat itself fails with these, it's a definitive issue with accessing the chat.
-                logger.warning(f"Failed to 'meet' peer {channel_id_or_username} due to: {type(e).__name__} - {e}")
-                raise HTTPException(
-                    status_code=status.HTTP_404_NOT_FOUND, 
-                    detail=f"Channel/Peer ID {channel_id_or_username} is invalid, private, or not accessible: {str(e)}"
-                )
-            # If get_chat succeeds, proceed to get history
-            history_params: dict[str, Any] = {"chat_id": channel_id_or_username, "limit": limit}
+            # Initialize resolved_peer_for_history to ensure it's always bound.
+            # It will be refined to the correct int or str type in the logic below.
+            resolved_peer_for_history: Union[int, str] = peer_to_process
+
+            if is_numeric_id:
+                # Ensure peer_to_process is int for numeric path
+                current_numeric_id = int(peer_to_process) 
+                logger.info(f"Processing numeric ID: {current_numeric_id}")
+                try:
+                    await client.get_chat(current_numeric_id)
+                    logger.info(f"Successfully 'met' peer {current_numeric_id} directly.")
+                    resolved_peer_for_history = current_numeric_id
+                except PeerIdInvalid:
+                    logger.info(f"Direct peer resolution failed for {current_numeric_id}, trying to find in dialogs...")
+                    peer_found_in_dialogs = False
+                    async for dialog in client.get_dialogs():
+                        if dialog.chat and dialog.chat.id == current_numeric_id:
+                            resolved_peer_for_history = dialog.chat.id
+                            peer_found_in_dialogs = True
+                            logger.info(f"Found peer {current_numeric_id} in dialogs.")
+                            break
+                    if not peer_found_in_dialogs:
+                        logger.warning(f"Peer {current_numeric_id} not found in dialogs.")
+                        raise HTTPException(
+                            status_code=status.HTTP_404_NOT_FOUND,
+                            detail=f"Channel/Peer ID {current_numeric_id} not found in your dialogs. Ensure access."
+                        )
+                except (ChannelInvalid, ChannelPrivate, UserNotParticipant) as e:
+                    logger.warning(f"Failed to 'meet' peer {current_numeric_id} due to: {type(e).__name__} - {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Channel/Peer ID {current_numeric_id} is invalid, private, or not accessible: {str(e)}"
+                    )
+            else: # Is a username string
+                current_username = str(peer_to_process)
+                logger.info(f"Processing username: {current_username}")
+                try:
+                    await client.get_chat(current_username)
+                    logger.info(f"Successfully 'met' peer (username) {current_username} before fetching history.")
+                    resolved_peer_for_history = current_username
+                except (PeerIdInvalid, ChannelInvalid, ChannelPrivate, UserNotParticipant) as e:
+                    logger.warning(f"Failed to 'meet' peer (username) {current_username} due to: {type(e).__name__} - {e}")
+                    raise HTTPException(
+                        status_code=status.HTTP_404_NOT_FOUND,
+                        detail=f"Channel/Username {current_username} is invalid, private, or not accessible: {str(e)}"
+                    )
+            
+            history_params: dict[str, Any] = {"chat_id": resolved_peer_for_history, "limit": limit}
             if offset_message_id > 0:
                 history_params["offset_id"] = offset_message_id
 
@@ -340,6 +397,8 @@ async def get_channel_messages(
                 msg_date_timestamp = 0
                 if msg.date and isinstance(msg.date, datetime.datetime):
                     msg_date_timestamp = int(msg.date.timestamp())
+                
+                is_outgoing_msg = getattr(msg, 'outgoing', None) # Pyrogram uses 'outgoing'
 
                 messages_data.append(MessageItem(
                     id=msg.id,
@@ -350,7 +409,8 @@ async def get_channel_messages(
                     file_id=file_id_str,
                     file_name=file_name_str,
                     mime_type=mime_type_str,
-                    poll_data=poll_data_obj
+                    poll_data=poll_data_obj,
+                    is_outgoing=is_outgoing_msg 
                 ))
         logger.info(f"Fetched {len(messages_data)} messages from {channel_id_or_username} for {PHONE_NUMBER}")
         return messages_data
@@ -482,15 +542,27 @@ async def get_media_file_endpoint(
 
             logger.info(f"Attempting to download file_id: {actual_file_id_to_download}")
             
-            file_stream: Optional[io.BytesIO] = await client.download_media(
+            downloaded_object = await client.download_media(
                 message=actual_file_id_to_download,
                 in_memory=True
             )
 
-            if not file_stream:
+            if not downloaded_object:
                 logger.error(f"Download_media returned None for file_id: {actual_file_id_to_download}")
-                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error processing media file after download.")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Error processing media file after download (returned None).")
+
+            if not isinstance(downloaded_object, io.BytesIO):
+                logger.error(f"Download_media did not return BytesIO for file_id: {actual_file_id_to_download}. Type: {type(downloaded_object)}")
+                # Attempt to clean up if it's a file path (string) due to unexpected behavior
+                if isinstance(downloaded_object, str) and os.path.exists(downloaded_object):
+                    try:
+                        os.remove(downloaded_object)
+                        logger.info(f"Cleaned up unexpected file on disk: {downloaded_object}")
+                    except OSError as e_os:
+                        logger.error(f"Error cleaning up unexpected file {downloaded_object}: {e_os}")
+                raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Media download resulted in an unexpected type.")
             
+            file_stream: io.BytesIO = downloaded_object # Now asserted to be BytesIO
             file_stream.seek(0)
 
             return StreamingResponse(
