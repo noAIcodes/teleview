@@ -3,5 +3,4 @@ uvicorn[standard]
 pyrogram
 TgCrypto
 python-dotenv
-aiosqlite
 slowapi

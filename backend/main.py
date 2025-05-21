@@ -42,9 +42,6 @@ except ValueError:
     logger.error(error_msg)
     raise RuntimeError(error_msg)
 
-async def init_db():
-    logger.info("Database initialization step (if any other tables exist). No session table needed.")
-
 app = FastAPI(title="Telegram Channel Viewer API")
 
 origins = [
@@ -62,7 +59,6 @@ app.add_middleware(
 
 @app.on_event("startup")
 async def startup_event():
-    await init_db()
     logger.info(f"Application started. Using phone number: {PHONE_NUMBER} for session.")
 
 # --- Pydantic Models ---
@@ -189,29 +185,31 @@ async def list_dialogs():
     dialog_items: List[DialogItem] = []
     try:
         async with pyrogram_client_manager() as client:
-            async for dialog in client.get_dialogs():
-                dialog_type_str = "unknown"
-                current_chat = dialog.chat
-                if current_chat and current_chat.type and hasattr(current_chat.type, 'name'):
-                    dialog_type_str = current_chat.type.name.lower()
-                
-                title = "N/A"
-                if current_chat:
-                    if hasattr(current_chat, 'title') and current_chat.title:
-                        title = current_chat.title
-                    elif hasattr(current_chat, 'first_name') and current_chat.first_name:
-                        title = current_chat.first_name
-                        if hasattr(current_chat, 'last_name') and current_chat.last_name:
-                            title += f" {current_chat.last_name}"
-                    elif hasattr(current_chat, 'username') and current_chat.username:
-                        title = current_chat.username
-                
-                if current_chat and hasattr(current_chat, 'id'):
-                    dialog_items.append(DialogItem(
-                        id=current_chat.id,
-                        title=title,
-                        type=dialog_type_str
-                    ))
+            dialogs_iterable = client.get_dialogs()
+            if dialogs_iterable:
+                async for dialog in dialogs_iterable:
+                    dialog_type_str = "unknown"
+                    current_chat = dialog.chat
+                    if current_chat and current_chat.type and hasattr(current_chat.type, 'name'):
+                        dialog_type_str = current_chat.type.name.lower()
+                    
+                    title = "N/A"
+                    if current_chat:
+                        if hasattr(current_chat, 'title') and current_chat.title:
+                            title = current_chat.title
+                        elif hasattr(current_chat, 'first_name') and current_chat.first_name:
+                            title = current_chat.first_name
+                            if hasattr(current_chat, 'last_name') and current_chat.last_name:
+                                title += f" {current_chat.last_name}"
+                        elif hasattr(current_chat, 'username') and current_chat.username:
+                            title = current_chat.username
+                    
+                    if current_chat and hasattr(current_chat, 'id'):
+                        dialog_items.append(DialogItem(
+                            id=current_chat.id,
+                            title=title,
+                            type=dialog_type_str
+                        ))
         logger.info(f"Successfully fetched {len(dialog_items)} dialogs for {PHONE_NUMBER}")
         return dialog_items
     except HTTPException:
@@ -306,12 +304,15 @@ async def get_channel_messages(
                 except PeerIdInvalid:
                     logger.info(f"Direct peer resolution failed for {current_numeric_id}, trying to find in dialogs...")
                     peer_found_in_dialogs = False
-                    async for dialog in client.get_dialogs():
-                        if dialog.chat and dialog.chat.id == current_numeric_id:
-                            resolved_peer_for_history = dialog.chat.id
-                            peer_found_in_dialogs = True
-                            logger.info(f"Found peer {current_numeric_id} in dialogs.")
-                            break
+                    dialogs_generator_inner = await client.get_dialogs()
+                    if dialogs_generator_inner:
+                        async for dialog in dialogs_generator_inner:
+                            # This block is now explicitly indented with 4 spaces per level
+                            if dialog.chat and dialog.chat.id == current_numeric_id:
+                                resolved_peer_for_history = dialog.chat.id
+                                peer_found_in_dialogs = True
+                                logger.info(f"Found peer {current_numeric_id} in dialogs.")
+                                break
                     if not peer_found_in_dialogs:
                         logger.warning(f"Peer {current_numeric_id} not found in dialogs.")
                         raise HTTPException(
@@ -342,76 +343,78 @@ async def get_channel_messages(
             if offset_message_id > 0:
                 history_params["offset_id"] = offset_message_id
 
-            async for msg in client.get_chat_history(**history_params): # msg is PyrogramMessage
-                if not isinstance(msg, PyrogramMessage): continue
+            messages_generator = client.get_chat_history(**history_params) # msg is PyrogramMessage
+            if messages_generator:
+                async for msg in messages_generator:
+                    if not isinstance(msg, PyrogramMessage): continue
 
-                sender_str = "N/A"
-                if msg.from_user:
-                    sender_str = msg.from_user.first_name or str(msg.from_user.id)
-                    if msg.from_user.last_name:
-                        sender_str += f" {msg.from_user.last_name}"
-                elif msg.sender_chat: # For messages from channels
-                    sender_str = msg.sender_chat.title or str(msg.sender_chat.id)
-                
-                media_type_str: Optional[str] = None
-                file_id_str: Optional[str] = None
-                file_name_str: Optional[str] = None
-                mime_type_str: Optional[str] = None
-                poll_data_obj: Optional[PollDetails] = None
+                    sender_str = "N/A"
+                    if msg.from_user:
+                        sender_str = msg.from_user.first_name or str(msg.from_user.id)
+                        if msg.from_user.last_name:
+                            sender_str += f" {msg.from_user.last_name}"
+                    elif msg.sender_chat: # For messages from channels
+                        sender_str = msg.sender_chat.title or str(msg.sender_chat.id)
+                    
+                    media_type_str: Optional[str] = None
+                    file_id_str: Optional[str] = None
+                    file_name_str: Optional[str] = None
+                    mime_type_str: Optional[str] = None
+                    poll_data_obj: Optional[PollDetails] = None
 
-                if msg.media and isinstance(msg.media, pyrogram.enums.MessageMediaType):
-                    media_type_str = msg.media.name.lower() # Use enum's name
+                    if msg.media and isinstance(msg.media, pyrogram.enums.MessageMediaType):
+                        media_type_str = msg.media.name.lower() # Use enum's name
 
-                    if msg.photo:
-                        file_id_str = msg.photo.file_id
-                    elif msg.video:
-                        file_id_str = msg.video.file_id
-                        file_name_str = msg.video.file_name
-                        mime_type_str = msg.video.mime_type
-                    elif msg.audio:
-                        file_id_str = msg.audio.file_id
-                        file_name_str = msg.audio.file_name
-                        mime_type_str = msg.audio.mime_type
-                    elif msg.document:
-                        file_id_str = msg.document.file_id
-                        file_name_str = msg.document.file_name
-                        mime_type_str = msg.document.mime_type
-                    elif msg.poll and isinstance(msg.poll, Poll): # Check if it's a Poll object
-                        pyro_poll = msg.poll
-                        poll_type_name = "unknown"
-                        if pyro_poll.type and hasattr(pyro_poll.type, 'name'):
-                             poll_type_name = pyro_poll.type.name.lower()
+                        if msg.photo:
+                            file_id_str = msg.photo.file_id
+                        elif msg.video:
+                            file_id_str = msg.video.file_id
+                            file_name_str = msg.video.file_name
+                            mime_type_str = msg.video.mime_type
+                        elif msg.audio:
+                            file_id_str = msg.audio.file_id
+                            file_name_str = msg.audio.file_name
+                            mime_type_str = msg.audio.mime_type
+                        elif msg.document:
+                            file_id_str = msg.document.file_id
+                            file_name_str = msg.document.file_name
+                            mime_type_str = msg.document.mime_type
+                        elif msg.poll and isinstance(msg.poll, Poll): # Check if it's a Poll object
+                            pyro_poll = msg.poll
+                            poll_type_name = "unknown"
+                            if pyro_poll.type and hasattr(pyro_poll.type, 'name'):
+                                 poll_type_name = pyro_poll.type.name.lower()
 
-                        poll_data_obj = PollDetails(
-                            question=pyro_poll.question,
-                            options=[PollOptionItem(text=opt.text, data=opt.data) for opt in pyro_poll.options],
-                            total_voters=getattr(pyro_poll, 'total_voters', None),
-                            is_closed=pyro_poll.is_closed,
-                            is_anonymous=pyro_poll.is_anonymous,
-                            type=poll_type_name,
-                            allows_multiple_answers=pyro_poll.allows_multiple_answers,
-                            quiz_correct_option_id=pyro_poll.correct_option_id
-                        )
-                        # media_type_str is already "poll" from msg.media.name.lower()
-                
-                msg_date_timestamp = 0
-                if msg.date and isinstance(msg.date, datetime.datetime):
-                    msg_date_timestamp = int(msg.date.timestamp())
-                
-                is_outgoing_msg = getattr(msg, 'outgoing', None) # Pyrogram uses 'outgoing'
+                            poll_data_obj = PollDetails(
+                                question=pyro_poll.question,
+                                options=[PollOptionItem(text=opt.text, data=opt.data) for opt in pyro_poll.options],
+                                total_voters=getattr(pyro_poll, 'total_voters', None),
+                                is_closed=pyro_poll.is_closed,
+                                is_anonymous=pyro_poll.is_anonymous,
+                                type=poll_type_name,
+                                allows_multiple_answers=pyro_poll.allows_multiple_answers,
+                                quiz_correct_option_id=pyro_poll.correct_option_id
+                            )
+                            # media_type_str is already "poll" from msg.media.name.lower()
+                    
+                    msg_date_timestamp = 0
+                    if msg.date and isinstance(msg.date, datetime.datetime):
+                        msg_date_timestamp = int(msg.date.timestamp())
+                    
+                    is_outgoing_msg = getattr(msg, 'outgoing', None) # Pyrogram uses 'outgoing'
 
-                messages_data.append(MessageItem(
-                    id=msg.id,
-                    text=msg.text or msg.caption, # Handles both text and caption for media
-                    sender=sender_str,
-                    date=msg_date_timestamp,
-                    media_type=media_type_str,
-                    file_id=file_id_str,
-                    file_name=file_name_str,
-                    mime_type=mime_type_str,
-                    poll_data=poll_data_obj,
-                    is_outgoing=is_outgoing_msg 
-                ))
+                    messages_data.append(MessageItem(
+                        id=msg.id,
+                        text=msg.text or msg.caption, # Handles both text and caption for media
+                        sender=sender_str,
+                        date=msg_date_timestamp,
+                        media_type=media_type_str,
+                        file_id=file_id_str,
+                        file_name=file_name_str,
+                        mime_type=mime_type_str,
+                        poll_data=poll_data_obj,
+                        is_outgoing=is_outgoing_msg
+                    ))
         logger.info(f"Fetched {len(messages_data)} messages from {channel_id_or_username} for {PHONE_NUMBER}")
         return messages_data
     except (ChannelPrivate, ChannelInvalid, PeerIdInvalid, UserNotParticipant):
