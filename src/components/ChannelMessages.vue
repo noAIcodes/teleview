@@ -203,8 +203,16 @@ const fetchMessages = async (channel, isLoadingMore = false) => {
     return;
   }
 
+  const container = messageListContainerRef.value;
+  let oldScrollHeight = 0;
+  let oldScrollTop = 0;
+
   if (isLoadingMore) {
     loadingMore.value = true;
+    if (container) {
+      oldScrollHeight = container.scrollHeight;
+      oldScrollTop = container.scrollTop;
+    }
   } else {
     loading.value = true;
     currentOffset.value = 0; // Reset offset for initial load
@@ -214,22 +222,30 @@ const fetchMessages = async (channel, isLoadingMore = false) => {
 
   try {
     const response = await axios.get(`http://localhost:8000/api/channels/${channel}/messages?limit=${messagesPerPage}&offset=${currentOffset.value}`);
-    const newMessages = response.data.map((msg, index) => ({
+    
+    // API likely returns newest first in batch; reverse to get oldest first for this batch
+    const receivedMessagesInBatch = response.data.reverse(); 
+    
+    const processedNewMessages = receivedMessagesInBatch.map(msg => ({
       ...msg,
-      is_outgoing: msg.is_outgoing !== undefined ? msg.is_outgoing : ((currentOffset.value + index) % 2 === 0), // Keep demo logic if needed
+      is_outgoing: msg.is_outgoing !== undefined ? msg.is_outgoing : false, // Use backend value, default to false
       poll_data: msg.media_type === 'poll' ? (msg.poll_data || { options: [], question: 'Poll Question Missing' }) : null
     }));
 
     if (isLoadingMore) {
-      messages.value = [...newMessages, ...messages.value]; // Prepend older messages
-    } else {
-      messages.value = newMessages;
-    }
-
-    currentOffset.value += newMessages.length;
-    hasMoreMessages.value = newMessages.length === messagesPerPage;
-
-    if (!isLoadingMore) {
+      messages.value = [...processedNewMessages, ...messages.value]; // Prepend older messages
+      currentOffset.value += processedNewMessages.length;
+      hasMoreMessages.value = processedNewMessages.length === messagesPerPage;
+      
+      await nextTick(); // Wait for DOM to update with new messages
+      if (container) {
+        // Adjust scroll to keep view stable, new messages are at the top
+        container.scrollTop = (container.scrollHeight - oldScrollHeight) + oldScrollTop;
+      }
+    } else { // Initial load
+      messages.value = processedNewMessages;
+      currentOffset.value = processedNewMessages.length; // Set initial offset
+      hasMoreMessages.value = processedNewMessages.length === messagesPerPage;
       scrollToBottom(true); // Scroll to bottom on initial load
     }
 
