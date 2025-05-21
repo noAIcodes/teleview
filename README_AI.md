@@ -1,8 +1,8 @@
 # Telegram Web Viewer (User Account) - Developer Handoff & AI Collaboration Guide
 
-**Version:** 1.1.0 (As of 2025-05-20 - *Please update with current date upon major handoff*)
+**Version:** 1.1.1 (As of 2025-05-21 - *Please update with current date upon major handoff*)
 **Last Updated By:** Cline (AI Assistant)
-**Reason for Update:** Refactored to session-based authentication, removing phone number from API calls and frontend auth flow.
+**Reason for Update:** Enhanced backend message handling: improved peer ID resolution and added `is_outgoing` flag for UI.
 
 ## 1. Introduction for Collaborators
 
@@ -139,7 +139,7 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 | Method | Path                                      | Description                                                                 | Key Request Parameters/Body | Example Success Response                                                                |
 | :----- | :---------------------------------------- | :-------------------------------------------------------------------------- | :-------------------------- | :-------------------------------------------------------------------------------------- |
 | GET    | `/api/dialogs`                            | Lists the authenticated user's dialogs. Session is pre-loaded by backend.   | None                        | `[{"id": ..., "title": "...", "type": "..."}, ...]`                                      |
-| GET    | `/api/channels/{channel_id}/messages`     | Fetches messages from a specific channel/dialog. Session pre-loaded.        | Path: `channel_id`. Query: `limit`, `offset` | `[{"id": ..., "text": ..., "sender": ..., "date": ..., "media_type": ..., ...}, ...]` |
+| GET    | `/api/channels/{channel_id}/messages`     | Fetches messages from a specific channel/dialog. Session pre-loaded.        | Path: `channel_id`. Query: `limit`, `offset` | `[{"id": ..., "text": ..., "sender": ..., "date": ..., "media_type": ..., "is_outgoing": false, ...}, ...]` |
 | GET    | `/api/channels/{channel_id}/info`         | Fetches information about a specific channel/dialog. Session pre-loaded.    | Path: `channel_id`          | `{"id": ..., "title": ..., "type": ..., "username": ..., "description": ...}`           |
 | POST   | `/api/send_message`                       | Sends a text message. Session pre-loaded.                                   | `{"chat_id": ..., "text": "Hello"}` | `{"message": "Message sent successfully!"}`                                             |
 | POST   | `/api/channels/join`                      | Joins a channel. Session pre-loaded.                                        | `{"channel_id": ...}`       | `{"message": "Successfully joined channel!"}`                                           |
@@ -153,6 +153,11 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
     *   Switched to session-file based authentication using `create_session.py`.
     *   API endpoints updated to use the pre-loaded session, removing `phone_number` dependencies.
     *   `aiosqlite` and `slowapi` usage might be reduced or removed if old auth endpoints are deprecated.
+    *   **Message Fetching (`get_channel_messages`):**
+        *   Significantly improved peer resolution logic to correctly handle various `channel_id_or_username` inputs:
+            *   Properly parses and processes integer IDs, string representations of positive/negative numeric IDs, and actual string usernames.
+            *   For numeric IDs, attempts direct `client.get_chat()` and falls back to searching dialogs if `PeerIdInvalid` occurs, ensuring the peer is "met" before fetching history.
+        *   Added an `is_outgoing` (boolean) field to the `MessageItem` response model. This field is populated from Pyrogram's `message.outgoing` attribute, allowing the frontend to distinguish messages sent by the authenticated user.
 *   **Frontend (`src/`):**
     *   `AuthForm.vue` removed.
     *   `App.vue` directly renders `DialogList.vue`.
