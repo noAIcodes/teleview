@@ -28,16 +28,28 @@
           v-for="dialog in dialogs.list"
           :key="dialog.id"
           @click="selectDialog(dialog)"
-          class="p-3 rounded-md hover:bg-gray-100 cursor-pointer border border-gray-200"
+          class="p-4 rounded-lg hover:bg-gray-100 cursor-pointer border border-gray-200 shadow-sm transition-all"
           :class="{
-            'bg-blue-100 border-blue-300':
+            'bg-blue-100 border-blue-400 shadow-md':
               dialogs.selected && dialogs.selected.id === dialog.id,
+            'bg-white': !dialogs.selected || dialogs.selected.id !== dialog.id
           }"
         >
-          <p class="font-medium text-gray-800">{{ dialog.title }}</p>
-          <p class="text-sm text-gray-500">
-            Type: {{ dialog.type }} | ID: {{ dialog.id }}
-          </p>
+          <div class="flex justify-between items-center">
+            <p class="font-semibold text-gray-800 truncate" :title="dialog.title">{{ dialog.title }}</p>
+            <span
+              class="text-xs font-medium px-2 py-0.5 rounded-full"
+              :class="{
+                'bg-green-200 text-green-800': dialog.type === 'user' || dialog.type === 'bot',
+                'bg-indigo-200 text-indigo-800': dialog.type === 'group' || dialog.type === 'supergroup',
+                'bg-pink-200 text-pink-800': dialog.type === 'channel',
+                'bg-gray-200 text-gray-800': !['user', 'bot', 'group', 'supergroup', 'channel'].includes(dialog.type)
+              }"
+            >
+              {{ dialog.type }}
+            </span>
+          </div>
+          <p class="text-xs text-gray-500 mt-1">ID: {{ dialog.id }}</p>
         </li>
       </ul>
       <p
@@ -56,22 +68,32 @@
       v-if="dialogs.selected"
       class="mt-6 p-4 border rounded-lg shadow-md bg-white"
     >
-      <h2 class="text-xl font-semibold mb-3 text-gray-700">
-        Messages for: {{ dialogs.selected.title }}
-      </h2>
-      <p class="text-gray-500">Message display will be implemented next.</p>
+      <div class="mb-3 pb-2 border-b border-gray-200">
+        <h2 class="text-xl font-semibold text-gray-800 inline">
+          Viewing: <span class="font-bold text-blue-600">{{ dialogs.selected.title }}</span>
+        </h2>
+        <p class="text-sm text-gray-500 inline ml-2">
+          (Type: {{ dialogs.selected.type }} | ID: {{ dialogs.selected.id }})
+        </p>
+      </div>
+      <!-- Message display will be implemented next. -->
       <!-- Placeholder for messages -->
+      <ChannelMessages :channelId="dialogs.selected ? dialogs.selected.id : null" />
     </section>
   </div>
 </template>
 
 <script>
 import axios from "axios";
+import ChannelMessages from "./components/ChannelMessages.vue"; // Import the component
 
 const API_BASE_URL = "http://localhost:8000/api";
 
 export default {
   name: "App",
+  components: { // Register the component
+    ChannelMessages,
+  },
   data() {
     return {
       // Auth object simplified as backend is pre-authenticated
