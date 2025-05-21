@@ -221,43 +221,93 @@ async def list_dialogs():
 @app.get("/api/channels/{channel_id_or_username}/info", response_model=ChannelInfo)
 async def get_channel_info(channel_id_or_username: Union[int, str]):
     logger.info(f"Request for channel info: {channel_id_or_username} (session: {PHONE_NUMBER})")
+    
+    peer_to_get_info_for: Union[int, str]
+    is_numeric_id = False
+
+    if isinstance(channel_id_or_username, int):
+        peer_to_get_info_for = channel_id_or_username
+        is_numeric_id = True
+    elif isinstance(channel_id_or_username, str):
+        try:
+            peer_to_get_info_for = int(channel_id_or_username)
+            is_numeric_id = True
+            logger.info(f"Parsed '{channel_id_or_username}' as numeric ID for get_channel_info: {peer_to_get_info_for}")
+        except ValueError:
+            peer_to_get_info_for = channel_id_or_username
+            is_numeric_id = False
+            logger.info(f"Treating '{channel_id_or_username}' as a username string for get_channel_info.")
+    else:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid channel_id_or_username type for get_channel_info.")
+
     try:
         async with pyrogram_client_manager() as client:
-            chat_obj = await client.get_chat(channel_id_or_username) # Type: Union[Chat, ChatPreview]
+            chat_obj: Optional[Union[Chat, ChatPreview]] = None
             
+            try:
+                # Attempt to get chat directly using the parsed peer identifier
+                chat_obj = await client.get_chat(peer_to_get_info_for)
+                logger.info(f"Successfully fetched chat info directly for {peer_to_get_info_for}")
+            
+            except PeerIdInvalid:
+                logger.warning(f"PeerIdInvalid for {peer_to_get_info_for} in get_channel_info. Attempting to find in dialogs if numeric.")
+                if is_numeric_id:
+                    # This must be an int if is_numeric_id is True
+                    numeric_id_to_find = int(peer_to_get_info_for)
+                    dialogs_generator = await client.get_dialogs()
+                    found_in_dialogs = False
+                    if dialogs_generator:
+                        async for dialog in dialogs_generator:
+                            if dialog.chat and dialog.chat.id == numeric_id_to_find:
+                                logger.info(f"Found peer {numeric_id_to_find} in dialogs. Retrying get_chat for info.")
+                                # Retry get_chat now that the peer should be "met"
+                                chat_obj = await client.get_chat(numeric_id_to_find)
+                                found_in_dialogs = True
+                                break
+                    if not found_in_dialogs:
+                        logger.error(f"Peer {numeric_id_to_find} not found in dialogs after PeerIdInvalid.")
+                        raise # Re-raise PeerIdInvalid to be caught by the outer handler
+                else: # Was a string username and PeerIdInvalid, re-raise
+                    logger.warning(f"PeerIdInvalid for username '{peer_to_get_info_for}' in get_channel_info. Cannot resolve further.")
+                    raise
+            
+            # Check if chat_obj was successfully populated
             if not chat_obj:
-                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Chat not found")
+                logger.error(f"Chat object is None for {peer_to_get_info_for} after all attempts in get_channel_info.")
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Chat '{peer_to_get_info_for}' not found or inaccessible after resolution attempts.")
 
-            chat_id = getattr(chat_obj, 'id', None)
-            if chat_id is None:
-                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not retrieve chat ID")
+            chat_id_val = getattr(chat_obj, 'id', None)
+            if chat_id_val is None:
+                 raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Could not retrieve chat ID from chat object.")
 
-            title = getattr(chat_obj, 'title', None) or getattr(chat_obj, 'first_name', "N/A")
-            username = getattr(chat_obj, 'username', None)
-            description = getattr(chat_obj, 'description', None)
-            members_count = getattr(chat_obj, 'members_count', None)
+            title_val = getattr(chat_obj, 'title', None) or getattr(chat_obj, 'first_name', "N/A")
+            if not title_val and hasattr(chat_obj, 'username') and chat_obj.username: # Fallback for users with no first name but a username
+                title_val = chat_obj.username
+
+            username_val = getattr(chat_obj, 'username', None)
+            description_val = getattr(chat_obj, 'description', None)
+            members_count_val = getattr(chat_obj, 'members_count', None)
             
-            chat_type_str = "unknown"
-            # Ensure chat_obj.type is an enum and has a name attribute
+            chat_type_str_val = "unknown"
             if hasattr(chat_obj, 'type') and chat_obj.type and isinstance(chat_obj.type, pyrogram.enums.ChatType) and hasattr(chat_obj.type, 'name'):
-                 chat_type_str = chat_obj.type.name.lower()
+                 chat_type_str_val = chat_obj.type.name.lower()
 
             return ChannelInfo(
-                id=chat_id,
-                title=title,
-                username=username,
-                description=description,
-                members_count=members_count,
-                type=chat_type_str
+                id=chat_id_val,
+                title=title_val,
+                username=username_val,
+                description=description_val,
+                members_count=members_count_val,
+                type=chat_type_str_val
             )
-    except (ChannelPrivate, ChannelInvalid, PeerIdInvalid, UserNotParticipant):
-        logger.warning(f"Channel not accessible or invalid: {channel_id_or_username}", exc_info=False)
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Channel not found, not accessible, or you are not a participant.")
-    except HTTPException:
+    except (ChannelPrivate, ChannelInvalid, PeerIdInvalid, UserNotParticipant) as e: # Catch PeerIdInvalid here if re-raised
+        logger.warning(f"Channel not accessible or invalid for get_channel_info '{channel_id_or_username}': {type(e).__name__} - {e}", exc_info=False) # Log type of error
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f"Channel '{channel_id_or_username}' not found, not accessible, or you are not a participant.")
+    except HTTPException: # Re-raise HTTPExceptions from pyrogram_client_manager or other places
         raise
-    except Exception as e:
-        logger.error(f"Error fetching channel info for {channel_id_or_username}: {e}", exc_info=True)
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch channel info: {str(e)}")
+    except Exception as e: # Catch-all for other unexpected errors
+        logger.error(f"Unexpected error fetching channel info for '{channel_id_or_username}': {e}", exc_info=True)
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"Failed to fetch channel info due to an unexpected error: {str(e)}")
 
 @app.get("/api/channels/{channel_id_or_username}/messages", response_model=List[MessageItem])
 async def get_channel_messages(

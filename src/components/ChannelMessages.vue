@@ -7,8 +7,19 @@
         </svg>
       </button>
       <div class="channel-info">
-        <h2 class="channel-name">Channel {{ channelId }}</h2>
-        <!-- Could add channel avatar or more info here -->
+        <div v-if="channelInfoData">
+          <h2 class="channel-name">{{ channelInfoData.title }}</h2>
+          <p class="channel-id-type">
+            <span class="channel-type">{{ channelInfoData.type }}</span>
+            <span class="channel-id">ID: {{ channelInfoData.id }}</span>
+          </p>
+        </div>
+        <div v-else-if="channelInfoError">
+          <p class="channel-name error-text">Error loading channel info</p>
+        </div>
+        <div v-else>
+          <p class="channel-name">Loading info...</p>
+        </div>
       </div>
       <button @click="props.toggleDarkMode" class="header-dark-mode-toggle" aria-label="Toggle dark mode">
         {{ props.darkMode ? 'Light' : 'Dark' }}
@@ -28,7 +39,7 @@
       <div v-if="messages.length" class="message-list">
         <div v-for="message in messages" :key="message.id" 
              class="message-item" 
-             :class="{ 'sent': message.is_outgoing, 'received': !message.is_outgoing }"> {/* Assuming is_outgoing property */}
+             :class="{ 'sent': message.is_outgoing, 'received': !message.is_outgoing }">
           
           <div class="message-bubble">
             <div v-if="!message.is_outgoing && message.sender" class="message-sender-name">{{ message.sender }}</div>
@@ -126,6 +137,8 @@ const loading = ref(true);
 const error = ref(null);
 const newMessageText = ref(''); // For the input field
 const messageListContainerRef = ref(null); // For scrolling to bottom
+const channelInfoData = ref(null);
+const channelInfoError = ref(null);
 
 const scrollToBottom = async () => {
   await nextTick(); // Wait for DOM updates
@@ -151,6 +164,23 @@ const calculatePollPercentage = (voters, total_voters) => {
   return Math.round((voters / total_voters) * 100);
 };
 
+const fetchChannelInfo = async (id) => {
+  if (!id) {
+    channelInfoData.value = null;
+    channelInfoError.value = null;
+    return;
+  }
+  try {
+    channelInfoError.value = null;
+    const response = await axios.get(`http://localhost:8000/api/channels/${id}/info`);
+    channelInfoData.value = response.data;
+  } catch (err) {
+    console.error('Error fetching channel info:', err);
+    channelInfoData.value = null;
+    channelInfoError.value = err.response?.data?.detail || 'Failed to load channel info.';
+  }
+};
+
 const fetchMessages = async (channel) => {
   if (!channel) {
     messages.value = [];
@@ -165,7 +195,7 @@ const fetchMessages = async (channel) => {
     messages.value = response.data.map((msg, index) => ({
       ...msg,
       // Example: make every other message "outgoing" if API doesn't provide this
-      is_outgoing: index % 2 === 0, 
+      is_outgoing: msg.is_outgoing !== undefined ? msg.is_outgoing : (index % 2 === 0), // Prefer API, fallback to demo
       // Ensure poll_data exists and has options
       poll_data: msg.media_type === 'poll' ? (msg.poll_data || { options: [], question: 'Poll Question Missing' }) : null
     }));
@@ -198,10 +228,14 @@ const sendMessage = () => {
 
 onMounted(() => {
   fetchMessages(props.channelId);
+  fetchChannelInfo(props.channelId);
 });
 
 watch(() => props.channelId, (newChannelId) => {
   fetchMessages(newChannelId);
+  fetchChannelInfo(newChannelId);
+  messages.value = []; // Clear previous messages
+  channelInfoData.value = null; // Clear previous channel info
 });
 
 watch(messages, () => { // Scroll to bottom when messages change
@@ -270,6 +304,25 @@ watch(messages, () => { // Scroll to bottom when messages change
   white-space: nowrap; /* Prevent wrapping if channel name is long */
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.2; /* Adjust if title wraps */
+  margin-bottom: 0.1rem; /* Space between title and id/type */
+}
+
+.channel-id-type {
+  font-size: 0.75rem;
+  color: var(--text-secondary-color);
+  display: flex;
+  gap: 0.5rem; /* Space between type and ID */
+  align-items: center;
+}
+
+.channel-type {
+  text-transform: capitalize; /* Capitalize first letter of type e.g. "channel", "user" */
+}
+
+.channel-id {
+  font-size: 0.7rem; /* Smaller font for ID */
+  opacity: 0.8;
 }
 
 .header-dark-mode-toggle {
