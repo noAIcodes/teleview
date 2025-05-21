@@ -628,10 +628,17 @@ async def get_media_file_endpoint(
         file_stream: io.BytesIO = downloaded_object 
         file_stream.seek(0)
 
+        disposition_type = "attachment"
+        if mime_type_for_response and \
+           (mime_type_for_response.startswith("image/") or \
+            mime_type_for_response.startswith("video/") or \
+            mime_type_for_response == "application/pdf"): # Also allow inline PDF
+            disposition_type = "inline"
+        
         return StreamingResponse(
             file_stream,
             media_type=mime_type_for_response,
-            headers={"Content-Disposition": f"attachment; filename=\"{file_name_for_response}\""}
+            headers={"Content-Disposition": f"{disposition_type}; filename=\"{file_name_for_response}\""}
         )
 
     except PeerIdInvalid:

@@ -186,6 +186,9 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
     *   Rate limiting: If old auth endpoints are removed, `slowapi` might be unnecessary. Consider if other endpoints need protection.
 *   **Code Cleanup (Backend):**
     *   Old authentication logic (routes, helper functions, `aiosqlite` usage for `phone_code_hash`) in `backend/main.py` should be removed if fully deprecated.
+*   **Pylance Static Analysis Notes (False Positives):**
+    *   Pylance (Python language server) may report an error in [`backend/main.py`](backend/main.py:69) (around line 69) concerning `PHONE_NUMBER.replace('+', '')`, suggesting `PHONE_NUMBER` could be `None`. This can be safely ignored as `PHONE_NUMBER` is validated at application startup (see lines 32-35 in [`backend/main.py`](backend/main.py:32)).
+    *   Pylance may also report errors on `async for` loops used with Pyrogram's `client.get_dialogs()` and `client.get_chat_history()` methods in [`backend/main.py`](backend/main.py:1) (e.g., around lines 206, 274, 371, 413). It might state that a `CoroutineType` is not iterable or that the `__aiter__` method is not defined. These errors are likely due to Pylance's type inference complexities with Pyrogram's async generator patterns. The runtime behavior of this code is correct, so these specific Pylance errors can also be ignored.
 *   **Styling:** The UI has been modernized and a dark mode toggle added. Further refinements and consistency checks for the new UI could be beneficial.
     *   **Channel/Dialog List Layout (FIXED):** Previously, the message list in `ChannelMessages.vue` and the dialog list in `DialogList.vue` were non-scrollable, and the message input box could be pushed off-screen. This was due to CSS flexbox height and overflow calculation issues.
         *   **Fix Applied:** The issue was resolved by:

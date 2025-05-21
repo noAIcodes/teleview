@@ -74,7 +74,13 @@
               
               <!-- Image Display -->
               <div v-else-if="message.media_type === 'photo' && message.file_id" class="image-display">
-                <img :src="getMediaUrl(message.file_id)" alt="Image" class="media-image-element" @error="imageLoadError" />
+                <img :src="getMediaUrl(props.channelId, message.id, message.media_type)" alt="Image" class="media-image-element" @error="imageLoadError" />
+                <p v-if="message.file_name" class="media-filename-caption">{{ message.file_name }}</p>
+              </div>
+
+              <!-- Video Display -->
+              <div v-else-if="(message.media_type === 'video' || (message.mime_type && message.mime_type.startsWith('video/'))) && message.file_id" class="video-display">
+                <video :src="getMediaUrl(props.channelId, message.id, message.media_type)" controls class="media-video-element"></video>
                 <p v-if="message.file_name" class="media-filename-caption">{{ message.file_name }}</p>
               </div>
 
@@ -84,7 +90,7 @@
                   <span class="file-type-icon">📄</span> <!-- Basic icon, can be improved -->
                   {{ message.file_name || message.media_type }}
                 </p>
-                <a :href="getMediaUrl(message.file_id, message.file_name)" target="_blank" download class="download-action-link">Download</a>
+                <a :href="getMediaUrl(props.channelId, message.id, message.media_type || 'document', message.file_name)" target="_blank" download class="download-action-link">Download</a>
                 <p v-if="message.mime_type" class="mime-type-caption">Type: {{ message.mime_type }}</p>
               </div>
               
@@ -163,8 +169,11 @@ const scrollToBottom = async (force = false) => {
   }
 };
 
-const getMediaUrl = (fileId, fileName = null) => {
-  let url = `http://localhost:8000/api/media/${fileId}`;
+const getMediaUrl = (chatId, messageId, mediaType, fileName = null) => {
+  // Use mediaType (like "photo", "video", "document") as the file_id_or_type path param
+  // The backend will then use the message object to find the actual file_id for download
+  // fileName is not directly used in this URL structure but kept for potential future use or consistency
+  let url = `http://localhost:8000/api/media/${chatId}/${messageId}/${mediaType}`;
   return url;
 };
 
@@ -509,6 +518,12 @@ watch(() => props.channelId, (newChannelId) => {
 }
 
 .media-image-element {
+  max-width: 100%;
+  border-radius: 0.5rem;
+  display: block;
+  margin-bottom: 0.25rem;
+}
+.media-video-element {
   max-width: 100%;
   border-radius: 0.5rem;
   display: block;
