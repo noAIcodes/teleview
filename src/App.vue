@@ -66,6 +66,7 @@ const backToDialogs = () => {
   flex-grow: 1;
   display: flex; /* Important for child components to take full height */
   flex-direction: column;
+  min-height: 0; /* Allow this container to shrink for its children's scrolling */
 }
 
 /* Styles for .dark-mode-toggle are removed as the button is no longer in this component */

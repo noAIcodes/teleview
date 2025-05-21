@@ -1,8 +1,8 @@
 # Telegram Web Viewer (User Account) - Developer Handoff & AI Collaboration Guide
 
-**Version:** 1.2.0 (As of 2025-05-21 - *Please update with current date upon major handoff*)
-**Last Updated By:** Roo (AI Assistant)
-**Reason for Update:** Refactored backend Pyrogram client management to use a single shared instance, improving stability and preventing "database is locked" errors. Added AI collaboration guidelines for large code changes.
+**Version:** 1.2.0 (As of 2025-05-21)
+**Last Updated By:** Cline (AI Assistant)
+**Reason for Update:** Resolved critical CSS layout issues causing non-scrollable message and dialog lists by applying `min-height: 0` to relevant flex containers in `App.vue`, `ChannelMessages.vue`, and `DialogList.vue`.
 
 ## 1. Introduction for Collaborators
 
@@ -187,7 +187,12 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 *   **Code Cleanup (Backend):**
     *   Old authentication logic (routes, helper functions, `aiosqlite` usage for `phone_code_hash`) in `backend/main.py` should be removed if fully deprecated.
 *   **Styling:** The UI has been modernized and a dark mode toggle added. Further refinements and consistency checks for the new UI could be beneficial.
-    *   **ChannelMessages Layout:** The send message input box in `ChannelMessages.vue` is often not visible or requires scrolling the entire page. The message list itself is currently non-scrollable, preventing independent scrolling of messages as intended. This core layout issue is likely due to complex CSS flexbox interactions and height/overflow calculations between `App.vue` and `ChannelMessages.vue` that need further investigation. This also blocks full testing of features like "load more messages".
+    *   **Channel/Dialog List Layout (FIXED):** Previously, the message list in `ChannelMessages.vue` and the dialog list in `DialogList.vue` were non-scrollable, and the message input box could be pushed off-screen. This was due to CSS flexbox height and overflow calculation issues.
+        *   **Fix Applied:** The issue was resolved by:
+            1.  Ensuring the main wrappers in `ChannelMessages.vue` (`.messages-view-wrapper`) and `DialogList.vue` (`.dialog-list-wrapper`) do not have `overflow: hidden`.
+            2.  Adding `min-height: 0;` to the scrollable list containers within these components (`.message-list-container` and `.dialogs-scroll-container` respectively).
+            3.  Adding `min-height: 0;` to the intermediate parent `div` (child of `.content-area`) in `App.vue` that hosts these components.
+        *   This allows the flex items to shrink correctly and enables proper scrolling within the designated list areas. Features like "load more messages" should now be fully testable.
 
 ## 11. Next Steps for AI (Development Roadmap)
 

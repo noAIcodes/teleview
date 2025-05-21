@@ -292,7 +292,7 @@ watch(() => props.channelId, (newChannelId) => {
   height: 100%; /* Fill available height from App.vue */
   background-color: var(--bg-color);
   color: var(--text-color);
-  overflow: hidden;
+  /* overflow: hidden; */
 }
 
 .messages-header {
@@ -424,6 +424,7 @@ watch(() => props.channelId, (newChannelId) => {
   padding: 1rem 0.75rem;
   display: flex;
   flex-direction: column;
+  min-height: 0; /* Added to help with flex scrolling */
 }
 
 .message-list {

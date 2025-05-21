@@ -105,7 +105,7 @@ onMounted(() => {
   height: 100%; /* Fill available height */
   background-color: var(--bg-color);
   color: var(--text-color);
-  overflow: hidden; /* Prevent overall page scroll, manage scrolling internally */
+  /* overflow: hidden; */ /* Prevent overall page scroll, manage scrolling internally */
 }
 
 .dialog-list-header {
@@ -208,6 +208,7 @@ onMounted(() => {
 .dialogs-scroll-container {
   flex-grow: 1;
   overflow-y: auto; /* Enable scrolling for the list only */
+  min-height: 0; /* Added to help with flex scrolling */
 }
 
 .dialog-list {
