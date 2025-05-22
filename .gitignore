@@ -36,3 +36,4 @@ backend/telegram_sessions.db
 backend/.env
 frontend/.env
 */.env
+.session-journal

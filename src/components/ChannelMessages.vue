@@ -74,13 +74,24 @@
               
               <!-- Image Display -->
               <div v-else-if="message.media_type === 'photo' && message.file_id" class="image-display">
-                <img :src="getMediaUrl(props.channelId, message.id, message.media_type)" alt="Image" class="media-image-element" @error="imageLoadError" />
+                <img
+                  :src="getMediaUrl(props.channelId, message.id, message.media_type)"
+                  alt="Image"
+                  class="media-image-element"
+                  @error="imageLoadError"
+                  @click="openMediaZoom(getMediaUrl(props.channelId, message.id, message.media_type), 'photo')"
+                />
                 <p v-if="message.file_name" class="media-filename-caption">{{ message.file_name }}</p>
               </div>
 
               <!-- Video Display -->
               <div v-else-if="(message.media_type === 'video' || (message.mime_type && message.mime_type.startsWith('video/'))) && message.file_id" class="video-display">
-                <video :src="getMediaUrl(props.channelId, message.id, message.media_type)" controls class="media-video-element"></video>
+                <video
+                  :src="getMediaUrl(props.channelId, message.id, message.media_type)"
+                  controls
+                  class="media-video-element"
+                  @click.prevent="openMediaZoom(getMediaUrl(props.channelId, message.id, message.media_type), 'video')"
+                ></video>
                 <p v-if="message.file_name" class="media-filename-caption">{{ message.file_name }}</p>
               </div>
 
@@ -118,6 +129,15 @@
         </svg>
       </button>
     </footer>
+
+    <!-- Media Zoom Modal -->
+    <div v-if="zoomedMediaUrl" class="media-zoom-overlay" @click="closeMediaZoom">
+      <div class="media-zoom-content" @click.stop>
+        <button @click="closeMediaZoom" class="close-zoom-button" aria-label="Close zoomed media">×</button>
+        <img v-if="zoomedMediaType === 'photo'" :src="zoomedMediaUrl" alt="Zoomed Image" class="zoomed-media-element"/>
+        <video v-if="zoomedMediaType === 'video'" :src="zoomedMediaUrl" controls autoplay class="zoomed-media-element"></video>
+      </div>
+    </div>
   </div>
 </template>
 
@@ -155,6 +175,9 @@ const messagesPerPage = 10;
 const currentOffset = ref(0);
 const hasMoreMessages = ref(true);
 const loadingMore = ref(false); // For "load more" action
+
+const zoomedMediaUrl = ref(null);
+const zoomedMediaType = ref(null);
 
 const scrollToBottom = async (force = false) => {
   await nextTick();
@@ -289,6 +312,16 @@ const sendMessage = () => {
   });
   newMessageText.value = '';
   scrollToBottom(true); // Force scroll to bottom after sending a message
+};
+
+const openMediaZoom = (url, type) => {
+  zoomedMediaUrl.value = url;
+  zoomedMediaType.value = type;
+};
+
+const closeMediaZoom = () => {
+  zoomedMediaUrl.value = null;
+  zoomedMediaType.value = null;
 };
 
 onMounted(() => {
@@ -519,15 +552,22 @@ watch(() => props.channelId, (newChannelId) => {
 
 .media-image-element {
   max-width: 100%;
+  height: auto; /* Maintain aspect ratio */
+  max-height: 300px; /* Limit initial display height */
+  object-fit: cover; /* Cover the area, might crop */
   border-radius: 0.5rem;
   display: block;
   margin-bottom: 0.25rem;
+  cursor: pointer; /* Indicate clickable */
 }
 .media-video-element {
   max-width: 100%;
+  height: auto; /* Maintain aspect ratio */
+  max-height: 300px; /* Limit initial display height */
   border-radius: 0.5rem;
   display: block;
   margin-bottom: 0.25rem;
+  cursor: pointer; /* Indicate clickable */
 }
 .media-filename-caption, .mime-type-caption {
   font-size: 0.75rem;
@@ -705,6 +745,59 @@ watch(() => props.channelId, (newChannelId) => {
 .dark-mode .load-more-button:hover:not(:disabled) {
   background-color: var(--primary-color);
   color: var(--button-text-color);
+}
+
+/* Styles for Media Zoom */
+.media-zoom-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background-color: rgba(0, 0, 0, 0.85);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000; /* Ensure it's on top */
+  padding: 20px;
+  box-sizing: border-box;
+}
+
+.media-zoom-content {
+  position: relative;
+  max-width: 90vw;
+  max-height: 90vh;
+  /* display: flex; */ /* Temporarily removed to test scaling behavior. Was: For centering image/video if smaller than max */
+  /* justify-content: center; */ /* Temporarily removed */
+  /* align-items: center; */ /* Temporarily removed */
+  /* With flex removed, the .zoomed-media-element will align to top-left if smaller than container */
+  /* The primary goal is to ensure it scales down if larger than container */
+}
+
+.zoomed-media-element {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain; /* Show full media, letterbox if needed */
+  border-radius: 4px;
+  box-shadow: 0 0 20px rgba(0,0,0,0.5);
+}
+
+.close-zoom-button {
+  position: absolute;
+  top: -30px; /* Position above the content area */
+  right: -5px;
+  background: none;
+  border: none;
+  color: white;
+  font-size: 2.5rem; /* Larger close button */
+  font-weight: bold;
+  cursor: pointer;
+  padding: 5px;
+  line-height: 1;
+  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
+}
+.dark-mode .close-zoom-button {
+  color: #ccc; /* Slightly dimmer for dark mode if needed */
 }
 
 </style>
