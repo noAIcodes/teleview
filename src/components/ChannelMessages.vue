@@ -79,7 +79,7 @@
                   alt="Image"
                   class="media-image-element"
                   @error="imageLoadError"
-                  @click="openMediaZoom(getMediaUrl(props.channelId, message.id, message.media_type), 'photo')"
+                  @click="openImageWithViewer(getMediaUrl(props.channelId, message.id, message.media_type))"
                 />
                 <p v-if="message.file_name" class="media-filename-caption">{{ message.file_name }}</p>
               </div>
@@ -90,7 +90,7 @@
                   :src="getMediaUrl(props.channelId, message.id, message.media_type)"
                   controls
                   class="media-video-element"
-                  @click.prevent="openMediaZoom(getMediaUrl(props.channelId, message.id, message.media_type), 'video')"
+                  <!-- Removed click to zoom for video, plays inline -->
                 ></video>
                 <p v-if="message.file_name" class="media-filename-caption">{{ message.file_name }}</p>
               </div>
@@ -130,20 +130,13 @@
       </button>
     </footer>
 
-    <!-- Media Zoom Modal -->
-    <div v-if="zoomedMediaUrl" class="media-zoom-overlay" @click="closeMediaZoom">
-      <div class="media-zoom-content" @click.stop>
-        <button @click="closeMediaZoom" class="close-zoom-button" aria-label="Close zoomed media">×</button>
-        <img v-if="zoomedMediaType === 'photo'" :src="zoomedMediaUrl" alt="Zoomed Image" class="zoomed-media-element"/>
-        <video v-if="zoomedMediaType === 'video'" :src="zoomedMediaUrl" controls autoplay class="zoomed-media-element"></video>
-      </div>
-    </div>
+    <!-- Media Zoom Modal removed, v-viewer will be used programmatically -->
   </div>
 </template>
 
 <script setup>
 // Added ref for new message text and message list container for scrolling
-import { ref, onMounted, watch, defineProps, defineEmits, nextTick } from 'vue';
+import { ref, onMounted, watch, defineProps, defineEmits, nextTick, getCurrentInstance } from 'vue';
 import axios from 'axios';
 
 const props = defineProps({
@@ -176,8 +169,7 @@ const currentOffset = ref(0);
 const hasMoreMessages = ref(true);
 const loadingMore = ref(false); // For "load more" action
 
-const zoomedMediaUrl = ref(null);
-const zoomedMediaType = ref(null);
+// Custom zoom refs removed
 
 const scrollToBottom = async (force = false) => {
   await nextTick();
@@ -314,14 +306,16 @@ const sendMessage = () => {
   scrollToBottom(true); // Force scroll to bottom after sending a message
 };
 
-const openMediaZoom = (url, type) => {
-  zoomedMediaUrl.value = url;
-  zoomedMediaType.value = type;
-};
+const instance = getCurrentInstance();
+const viewerApi = instance.appContext.config.globalProperties.$viewer;
 
-const closeMediaZoom = () => {
-  zoomedMediaUrl.value = null;
-  zoomedMediaType.value = null;
+const openImageWithViewer = (imageUrl) => {
+  if (viewerApi && viewerApi.show) { // Check if show method exists
+    viewerApi.show({ images: [imageUrl] });
+  } else {
+    console.error("Viewer API or show method not available. Check v-viewer setup in main.js and component.", viewerApi);
+    // Fallback or error message
+  }
 };
 
 onMounted(() => {
@@ -338,6 +332,8 @@ watch(() => props.channelId, (newChannelId) => {
   error.value = null; // Clear previous errors
   fetchMessages(newChannelId); // Fetch for new channel
 });
+
+// Watch for custom zoom removed
 
 // Removed the generic watch on messages for scrollToBottom, handled more explicitly now.
 
@@ -747,57 +743,6 @@ watch(() => props.channelId, (newChannelId) => {
   color: var(--button-text-color);
 }
 
-/* Styles for Media Zoom */
-.media-zoom-overlay {
-  position: fixed;
-  top: 0;
-  left: 0;
-  width: 100%;
-  height: 100%;
-  background-color: rgba(0, 0, 0, 0.85);
-  display: flex;
-  justify-content: center;
-  align-items: center;
-  z-index: 1000; /* Ensure it's on top */
-  padding: 20px;
-  box-sizing: border-box;
-}
-
-.media-zoom-content {
-  position: relative;
-  max-width: 90vw;
-  max-height: 90vh;
-  /* display: flex; */ /* Temporarily removed to test scaling behavior. Was: For centering image/video if smaller than max */
-  /* justify-content: center; */ /* Temporarily removed */
-  /* align-items: center; */ /* Temporarily removed */
-  /* With flex removed, the .zoomed-media-element will align to top-left if smaller than container */
-  /* The primary goal is to ensure it scales down if larger than container */
-}
-
-.zoomed-media-element {
-  max-width: 100%;
-  max-height: 100%;
-  object-fit: contain; /* Show full media, letterbox if needed */
-  border-radius: 4px;
-  box-shadow: 0 0 20px rgba(0,0,0,0.5);
-}
-
-.close-zoom-button {
-  position: absolute;
-  top: -30px; /* Position above the content area */
-  right: -5px;
-  background: none;
-  border: none;
-  color: white;
-  font-size: 2.5rem; /* Larger close button */
-  font-weight: bold;
-  cursor: pointer;
-  padding: 5px;
-  line-height: 1;
-  text-shadow: 0 1px 2px rgba(0,0,0,0.5);
-}
-.dark-mode .close-zoom-button {
-  color: #ccc; /* Slightly dimmer for dark mode if needed */
-}
+/* Custom Media Zoom styles removed as v-viewer provides its own styling */
 
 </style>
