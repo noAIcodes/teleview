@@ -1,8 +1,8 @@
 # Telegram Web Viewer (User Account) - Developer Handoff & AI Collaboration Guide
 
-**Version:** 1.3.0 (As of 2025-05-22)
+**Version:** 1.3.1 (As of 2025-05-23)
 **Last Updated By:** Roo (AI Assistant)
-**Reason for Update:** Attempted to implement image zoom/pan functionality in [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1). Initial custom solution was clunky. Switched to `v-viewer` library, but its programmatic API (`$viewer`) is currently not working, preventing image viewing on click.
+**Reason for Update:** Successfully fixed and implemented the image zoom/pan functionality in [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1) using the `v-viewer` library's programmatic API (`$viewerApi`).
 
 ## 1. Introduction for Collaborators
 
@@ -29,7 +29,7 @@ This project aims to build a responsive web application that allows a user to vi
 *   **Frontend:** Vue.js (v3 with Composition API)
     *   **Key Libraries:**
         *   `axios`: For making HTTP requests to the backend API.
-        *   `v-viewer`: For image viewing (zoom/pan). Attempted integration.
+        *   `v-viewer`: For image viewing (zoom/pan). Successfully integrated.
         *   `viewerjs`: Core library for `v-viewer`.
 *   **Backend:** Python with FastAPI
     *   **Key Libraries:**
@@ -171,13 +171,44 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
     *   Media display (images, downloads) and poll display remain functional.
     *   Implemented a modern user interface refresh.
     *   Added a dark mode toggle for user preference.
-    *   **Image Zoom/Pan Feature Attempt (In [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1)):**
-        *   Initially implemented a custom scroll-based zoom and pan feature for images in a modal. User feedback indicated this was "clunky."
-        *   Switched to integrating the `v-viewer` library for a more robust solution.
-        *   Installed `v-viewer` and `viewerjs` dependencies (see Section 3).
-        *   Updated [`src/main.js`](src/main.js:1) to register the `v-viewer` plugin and import its CSS.
-        *   Refactored [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1) to remove custom zoom logic and attempt to use the `$viewer` programmatic API.
-        *   **Current Status:** The `$viewer` global API, expected from `v-viewer` plugin registration, is not becoming available in the component (resolves as `undefined`). Consequently, clicking on images currently does nothing. This issue requires further investigation or an alternative approach (e.g., using `v-viewer` as a component, or trying a different library).
+    *   **Image Zoom/Pan Feature (In [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1)):**
+        *   Successfully implemented using the `v-viewer` library.
+        *   The `v-viewer` plugin is registered in [`src/main.js`](src/main.js:1) with default options:
+            ```javascript
+            // src/main.js
+            import VueViewer from 'v-viewer';
+            import 'viewerjs/dist/viewer.css';
+            // ...
+            app.use(VueViewer, {
+              defaultOptions: {
+                zIndex: 9999,
+                movable: true,
+                scalable: true,
+                // ... other default options
+              }
+            });
+            ```
+        *   In [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1), images are displayed programmatically using the `$viewerApi` global property made available by the plugin:
+            ```javascript
+            // src/components/ChannelMessages.vue
+            import { getCurrentInstance } from 'vue';
+            // ...
+            const instance = getCurrentInstance();
+            // ...
+            const openImageWithViewer = (imageUrl) => {
+              const viewerApi = instance.appContext.config.globalProperties.$viewerApi;
+              if (viewerApi) {
+                viewerApi({
+                  images: [imageUrl],
+                  // Options can be overridden here if needed
+                });
+              } else {
+                console.error("$viewerApi not found.");
+                window.open(imageUrl, '_blank'); // Fallback
+              }
+            };
+            ```
+        *   This provides a robust image viewing experience with zoom, pan, and other standard viewer controls.
 
 ## 9. Frontend Components Overview (Root `src/` directory)
 
@@ -189,8 +220,8 @@ The backend API (running on `http://localhost:8000` by default) now relies on a 
 
 *   **Media Display & UX:**
     *   Backend `/api/media/{file_id}` should set correct `Content-Type` for better inline display.
-    *   Frontend image loading could have indicators. Video/audio are download links. (Note: Video display was attempted in a custom modal previously, but this was removed during `v-viewer` integration for images, so videos currently only play inline without zoom).
-    *   **Image Zoom/Pan with `v-viewer` (High Priority):** The programmatic API (`$viewer`) for the `v-viewer` library is currently not working as expected in [`src/components/ChannelMessages.vue`](src/components/ChannelMessages.vue:1). Attempts to register the plugin in [`src/main.js`](src/main.js:1) have not resulted in the `$viewer` global property being available (it resolves to `undefined`). As a result, clicking on images does nothing. The browser console shows an error like "Viewer API or show method not available." This prevents the intended image zoom/pan functionality.
+    *   Frontend image loading could have indicators. Video/audio are download links. (Note: Video display was attempted in a custom modal previously, so videos currently only play inline without zoom).
+    *   **Image Zoom/Pan with `v-viewer` (RESOLVED):** The image zoom/pan functionality has been successfully implemented using the `$viewerApi` provided by the `v-viewer` plugin. See Section 8 (Development Status - Frontend) for implementation details.
 *   **Security:**
     *   **Session File Security:** The `.session` file in `backend/` is critical. It must NOT be committed to Git and the directory must be secured.
     *   Rate limiting: If old auth endpoints are removed, `slowapi` might be unnecessary. Consider if other endpoints need protection.

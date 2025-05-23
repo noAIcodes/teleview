@@ -11,8 +11,8 @@ Welcome to the Telegram Web Viewer! This project allows you to browse your Teleg
 
 *   **👁️ View Dialogs:** See a list of all your Telegram chats, channels, and groups.
 *   **💬 Browse Messages:** Select any dialog to view its message history.
-*   **🖼️ Media Display:**
-    *   View images directly in the chat.
+*   **🖼️ Enhanced Media Display:**
+    *   **Interactive Image Viewer:** Click on any image in a chat to open it in a full-featured modal viewer. Supports zoom, pan, rotation, and other standard image viewing controls (powered by `v-viewer`).
     *   Download links for videos, documents, and other file types.
 *   **🔒 Secure Session Authentication:** Uses Pyrogram's session management for secure access to your Telegram account.
 *   **🖥️ Modern User Interface:** Enjoy a clean, responsive, and user-friendly design.

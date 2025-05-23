@@ -136,7 +136,7 @@
 
 <script setup>
 // Added ref for new message text and message list container for scrolling
-import { ref, onMounted, watch, defineProps, defineEmits, nextTick, getCurrentInstance } from 'vue';
+import { ref, onMounted, watch, nextTick, getCurrentInstance } from 'vue';
 import axios from 'axios';
 
 const props = defineProps({
@@ -306,15 +306,34 @@ const sendMessage = () => {
   scrollToBottom(true); // Force scroll to bottom after sending a message
 };
 
+// Get the app instance to access the viewer API
 const instance = getCurrentInstance();
-const viewerApi = instance.appContext.config.globalProperties.$viewer;
 
+// Initialize the viewer API properly for Vue 3 and v-viewer
 const openImageWithViewer = (imageUrl) => {
-  if (viewerApi && viewerApi.show) { // Check if show method exists
-    viewerApi.show({ images: [imageUrl] });
-  } else {
-    console.error("Viewer API or show method not available. Check v-viewer setup in main.js and component.", viewerApi);
-    // Fallback or error message
+  try {
+    // Access the viewer API through the app context
+    const viewerApi = instance.appContext.config.globalProperties.$viewerApi;
+    
+    if (viewerApi) {
+      viewerApi({
+        images: [imageUrl],
+        options: {
+          // Add any specific options here if needed, otherwise defaults from main.js will be used
+          // For example:
+          // title: false,
+          // navbar: true,
+        }
+      });
+    } else {
+      console.error("$viewerApi not found. Check v-viewer setup in main.js.");
+      // Fallback - open in new tab if viewer fails
+      window.open(imageUrl, '_blank');
+    }
+  } catch (error) {
+    console.error("Error using image viewer:", error);
+    // Fallback - open in new tab if viewer fails
+    window.open(imageUrl, '_blank');
   }
 };
 

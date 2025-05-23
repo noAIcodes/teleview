@@ -1,14 +1,22 @@
 import { createApp } from 'vue'
 import './style.css'
 import App from './App.vue'
-import VueViewer from 'v-viewer' // Changed import name
+import VueViewer from 'v-viewer'
 import 'viewerjs/dist/viewer.css'
 
 const app = createApp(App)
-// Try using VueViewer.default if VueViewer is an object containing the plugin as default export
-if (VueViewer && typeof VueViewer === 'object' && VueViewer.default) {
-  app.use(VueViewer.default)
-} else {
-  app.use(VueViewer) // Original attempt with VueViewer
-}
+// Configure v-viewer with options
+app.use(VueViewer, {
+  defaultOptions: {
+    zIndex: 9999,
+    movable: true,
+    scalable: true,
+    rotatable: true,
+    tooltip: true,
+    navbar: true,
+    title: false,
+    fullscreen: true,
+    keyboard: true
+  }
+})
 app.mount('#app')
